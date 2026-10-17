@@ -87,6 +87,17 @@
   margin-right: clamp(18px, 4vw, 56px);
 }
 
+.account-area {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.account-role { display: grid; gap: 3px; text-align: right; }
+.account-role strong { color: var(--navy); font-size: 11px; font-weight: 600; }
+.account-role small { color: #8897aa; font-size: 10px; }
+.logout-button { min-height: 34px; white-space: nowrap; }
+
 .nav-link {
   display: inline-flex;
   align-items: center;
@@ -426,6 +437,70 @@ h2 {
   box-shadow: var(--shadow);
 }
 
+.role-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: -8px 0 22px;
+}
+
+.role-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 100px;
+  padding: 17px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.role-card__icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  place-items: center;
+}
+
+.role-card strong { display: block; color: var(--navy); font-size: 12px; }
+.role-card p { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.role-card--owner .role-card__icon { color: #7258c8; background: #f0edff; }
+.role-card--manager .role-card__icon { color: #147d75; background: #e9f8f6; }
+.role-card--employee .role-card__icon { color: #1769e0; background: #eaf3ff; }
+.members-panel { margin-bottom: 24px; }
+.members-table { min-width: 780px; }
+
+.member-name { display: flex; align-items: center; gap: 10px; }
+.member-avatar { display: grid; flex: 0 0 auto; width: 34px; height: 34px; color: var(--blue); background: var(--blue-soft); border-radius: 50%; font-size: 13px; font-weight: 600; place-items: center; }
+.member-name strong, .member-name small { display: block; }
+.member-name strong { color: var(--navy); font-size: 12px; }
+.member-name small { margin-top: 3px; color: #8795a8; font-size: 10px; }
+.member-name .you-label { display: inline; margin-left: 7px; color: var(--blue); font-weight: 400; }
+.role-badge { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 20px; font-size: 10px; font-weight: 500; }
+.role-badge--owner { color: #664bb5; background: #f0edff; }
+.role-badge--manager { color: #147d75; background: #e9f8f6; }
+.role-badge--employee { color: #1769e0; background: #eaf3ff; }
+.member-state { display: inline-flex; align-items: center; gap: 7px; color: #9aa8ba; font-size: 10px; }
+.member-state i { width: 6px; height: 6px; background: #aeb8c5; border-radius: 50%; }
+.member-state--active { color: #18805a; }
+.member-state--active i { background: #28b681; }
+.field-help { display: block; margin-top: 6px; color: #8a98aa; font-size: 10px; }
+
+.auth-screen { display: grid; min-height: 100vh; padding: 24px; background: radial-gradient(circle at 50% 0%, #e8f2ff 0, #f5f8fc 48%); place-items: center; }
+.auth-card { width: min(100%, 430px); padding: 34px; background: #fff; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 18px 50px rgba(39, 73, 122, 0.1); }
+.auth-brand { margin-bottom: 36px; }
+.auth-card h1 { font-size: 30px; }
+.auth-copy { margin: 9px 0 24px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.auth-card .form-field { margin-bottom: 16px; }
+.auth-hint { margin-top: -8px; color: var(--muted); font-size: 10px; }
+.auth-submit { width: 100%; margin-top: 20px; }
+.auth-roles { display: grid; gap: 5px; margin-top: 24px; padding-top: 17px; border-top: 1px solid var(--line); }
+.auth-roles strong { color: #52627a; font-size: 10px; }
+.auth-roles span { color: #8997a9; font-size: 10px; }
+.auth-loading { display: flex; align-items: center; color: var(--muted); font-size: 13px; }
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -539,11 +614,14 @@ h2 {
   .dashboard { width: min(100% - 32px, 760px); padding-top: 38px; }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .role-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
   .topbar { min-height: 64px; padding: 0 18px; flex-wrap: wrap; }
   .topbar__status { display: none; }
+  .account-area { order: 2; gap: 8px; }
+  .account-role { display: none; }
   .main-nav { order: 3; width: 100%; margin: 0; padding-bottom: 8px; overflow-x: auto; }
   .nav-link { flex: 0 0 auto; min-height: 34px; padding: 0 10px; font-size: 11px; }
   .dashboard { width: calc(100% - 24px); padding: 30px 0 48px; }
@@ -559,6 +637,10 @@ h2 {
   .search-field { width: 100%; }
   .panel-footer { padding: 12px 16px; }
   .status-grid { grid-template-columns: 1fr; padding: 16px; }
+  .role-grid { gap: 9px; margin-bottom: 16px; }
+  .role-card { min-height: 82px; padding: 13px; }
+  .auth-screen { padding: 14px; }
+  .auth-card { padding: 26px 21px; }
   .modal-backdrop { padding: 12px; place-items: end center; }
   .modal { padding: 22px 18px; border-radius: 14px 14px 10px 10px; }
 }
