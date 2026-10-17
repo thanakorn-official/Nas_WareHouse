@@ -45,10 +45,6 @@ function Icon({ name, size = 20 }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function StatCard({ icon, label, value, detail, tone }) {
-  return <article className={`stat-card stat-card--${tone}`}><div className="stat-card__topline"><span className="stat-card__icon"><Icon name={icon} size={21} /></span><span className="stat-card__label">{label}</span></div><strong className="stat-card__value">{value}</strong><span className="stat-card__detail">{detail}</span></article>;
-}
-
 function StatusBadge({ status }) {
   return <span className="stock-badge" style={{ '--status-color': status?.color || '#1769E0' }}><span />{status?.name || 'ไม่ระบุ'}</span>;
 }
@@ -66,8 +62,45 @@ function ProductPage({ products, loading, searchTerm, onSearchChange, onCreate, 
   return <><section className="welcome-section"><div><p className="eyebrow">คลังสินค้า</p><h1>สินค้า</h1><p className="welcome-copy">เพิ่ม แก้ไข และลบรายการสินค้า</p></div><button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> เพิ่มสินค้า</button></section><ProductTable products={products} loading={loading} searchTerm={searchTerm} onSearchChange={onSearchChange} onEdit={onEdit} onDelete={onDelete} deletingId={deletingId} /></>;
 }
 
-function DashboardPage({ products, stats, loading, onCreate, onEdit, onDelete, deletingId, canDelete }) {
-  return <><section className="welcome-section"><div><p className="eyebrow">ภาพรวมคลังสินค้า</p><h1>Dashboard</h1><p className="welcome-copy">ติดตามสินค้าและสถานะคลังของคุณได้ในที่เดียว</p></div><button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> เพิ่มสินค้า</button></section><section className="stats-grid"><StatCard icon="package" tone="blue" label="รายการสินค้าทั้งหมด" value={products.length.toLocaleString('th-TH')} detail="รายการในระบบ" /><StatCard icon="chart" tone="teal" label="จำนวนสินค้ารวม" value={stats.totalQuantity.toLocaleString('th-TH')} detail="ชิ้นในคลัง" /><StatCard icon="box" tone="violet" label="สถานะพร้อมขาย" value={stats.readyCount.toLocaleString('th-TH')} detail="รายการสินค้า" /><StatCard icon="warning" tone="orange" label="สินค้าใกล้หมด" value={stats.lowStockCount.toLocaleString('th-TH')} detail={`จำนวนไม่เกิน ${LOW_STOCK_THRESHOLD} ชิ้น`} /></section><ProductTable products={products} loading={loading} searchTerm="" onSearchChange={() => {}} onEdit={onEdit} onDelete={onDelete} deletingId={deletingId} canDelete={canDelete} /></>;
+function StatusPieChart({ products, statuses, loading }) {
+  const statusCounts = statuses.map(status => ({
+    ...status,
+    count: products.filter(product => String(product.status?.id) === String(status.id)).length,
+  }));
+  const total = statusCounts.reduce((sum, status) => sum + status.count, 0);
+  let currentAngle = 0;
+  const segments = statusCounts.filter(status => status.count > 0).map(status => {
+    const start = currentAngle;
+    currentAngle += (status.count / total) * 360;
+    return `${status.color || '#aeb8c5'} ${start}deg ${currentAngle}deg`;
+  });
+  const chartStyle = {
+    background: total ? `conic-gradient(${segments.join(', ')})` : '#e9eef5',
+  };
+
+  return <section className="status-chart-panel" aria-labelledby="status-chart-title">
+    <div className="panel-heading">
+      <div><h2 id="status-chart-title">สัดส่วนสินค้าตามสถานะ</h2><p>จำนวนรายการสินค้าแยกตามสถานะที่ตั้งค่าไว้</p></div>
+    </div>
+    <div className="status-chart-content">
+      <div className="status-donut" style={chartStyle} role="img" aria-label={`สินค้า ${total} รายการ แบ่งตาม ${statusCounts.length} สถานะ`}>
+        <div className="status-donut__center"><strong>{loading ? '…' : total.toLocaleString('th-TH')}</strong><span>รายการ</span></div>
+      </div>
+      <div className="status-chart-legend" aria-label="รายละเอียดจำนวนสินค้าตามสถานะ">
+        {statusCounts.map(status => <div className="status-chart-legend__item" key={status.id}>
+          <span className="status-chart-legend__swatch" style={{ background: status.color || '#aeb8c5' }} />
+          <span className="status-chart-legend__name">{status.name}</span>
+          <strong>{loading ? '—' : status.count.toLocaleString('th-TH')}</strong>
+          <small>{total ? `${Math.round((status.count / total) * 100)}%` : '0%'}</small>
+        </div>)}
+        {!loading && statuses.length === 0 && <p className="status-chart-empty">ยังไม่มีสถานะในระบบ</p>}
+      </div>
+    </div>
+  </section>;
+}
+
+function DashboardPage({ products, statuses, loading, onCreate, onEdit, onDelete, deletingId, canDelete }) {
+  return <><section className="welcome-section"><div><p className="eyebrow">ภาพรวมคลังสินค้า</p><h1>Dashboard</h1><p className="welcome-copy">ติดตามสินค้าและสถานะคลังของคุณได้ในที่เดียว</p></div><button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> เพิ่มสินค้า</button></section><StatusPieChart products={products} statuses={statuses} loading={loading} /><ProductTable products={products} loading={loading} searchTerm="" onSearchChange={() => {}} onEdit={onEdit} onDelete={onDelete} deletingId={deletingId} canDelete={canDelete} /></>;
 }
 
 function StatusesPage({ statuses, loading, onCreate, onEdit, onDelete }) {
@@ -265,12 +298,6 @@ function App() {
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isProductFormOpen, isStatusFormOpen, isMemberFormOpen]);
 
-  const stats = useMemo(() => ({
-    totalQuantity: products.reduce((sum, product) => sum + Number(product.quantity), 0),
-    readyCount: products.filter(product => product.status?.name === 'พร้อมขาย').length,
-    lowStockCount: products.filter(product => Number(product.quantity) <= LOW_STOCK_THRESHOLD).length,
-  }), [products]);
-
   const activeStatuses = statuses.filter(status => status.isActive);
 
   const handleAuthenticated = session => {
@@ -451,7 +478,7 @@ function App() {
   if (authState === 'checking') return <main className="auth-screen"><div className="auth-loading"><span className="spinner" />กำลังตรวจสอบบัญชีสมาชิก...</div></main>;
   if (authState === 'setup' || authState === 'login') return <AuthScreen mode={authState} error={authError} onAuthenticated={handleAuthenticated} />;
 
-  return <div className="app-shell"><header className="topbar"><a className="brand" href="#/" aria-label="Nas Warehouse หน้าหลัก"><span className="brand__mark"><Icon name="box" size={22} /></span><span><strong>Nas</strong><small>WAREHOUSE</small></span></a><nav className="main-nav" aria-label="เมนูหลัก"><button className={page === 'dashboard' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('dashboard')}>Dashboard</button><button className={page === 'products' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('products')}>สินค้า</button>{authUser.role === 'owner' && <button className={page === 'statuses' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('statuses')}><Icon name="settings" size={15} /> จัดการสถานะ</button>}{authUser.role === 'owner' && <button className={page === 'members' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('members')}><Icon name="members" size={15} /> สมาชิก</button>}</nav><div className="account-area"><span className="account-role"><strong>{authUser.fullName}</strong><small>{ROLE_META[authUser.role]?.label}</small></span><button className="button button--secondary button--small logout-button" type="button" onClick={handleLogout}>ออกจากระบบ</button></div></header><main className="dashboard">{success && <div className="alert alert--success" role="status">{success}<button type="button" onClick={() => setSuccess('')} aria-label="ปิดข้อความแจ้งเตือน"><Icon name="close" size={16} /></button></div>}{error && !isProductFormOpen && !isStatusFormOpen && !isMemberFormOpen && <div className="alert alert--error" role="alert">{error}<button type="button" onClick={() => setError('')} aria-label="ปิดข้อความผิดพลาด"><Icon name="close" size={16} /></button></div>}{page === 'dashboard' && <DashboardPage products={products} stats={stats} loading={loading} onCreate={openCreateProduct} onEdit={openEditProduct} onDelete={handleDeleteProduct} deletingId={deletingId} canDelete={canDeleteProducts} />}{page === 'products' && <ProductPage {...productTableProps} onCreate={openCreateProduct} />}{page === 'statuses' && authUser.role === 'owner' && <StatusesPage statuses={statuses} loading={loading} onCreate={openCreateStatus} onEdit={openEditStatus} onDelete={handleDeleteStatus} />}{page === 'members' && authUser.role === 'owner' && <MembersPage members={members} loading={membersLoading} currentUser={authUser} onCreate={openCreateMember} onEdit={openEditMember} onDeactivate={handleDeactivateMember} />}</main><ProductModal open={isProductFormOpen} editingProduct={editingProduct} form={productForm} activeStatuses={activeStatuses} submitting={submitting} error={error} onChange={handleProductChange} onSubmit={handleProductSubmit} onClose={() => setIsProductFormOpen(false)} /><StatusModal open={isStatusFormOpen} editingStatus={editingStatus} form={statusForm} submitting={submitting} error={error} onChange={handleStatusChange} onSubmit={handleStatusSubmit} onClose={() => setIsStatusFormOpen(false)} /><MemberModal open={isMemberFormOpen} editingMember={editingMember} form={memberForm} submitting={submitting} error={error} onChange={handleMemberChange} onSubmit={handleMemberSubmit} onClose={() => setIsMemberFormOpen(false)} /></div>;
+  return <div className="app-shell"><header className="topbar"><a className="brand" href="#/" aria-label="Nas Warehouse หน้าหลัก"><span className="brand__mark"><Icon name="box" size={22} /></span><span><strong>Nas</strong><small>WAREHOUSE</small></span></a><nav className="main-nav" aria-label="เมนูหลัก"><button className={page === 'dashboard' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('dashboard')}>Dashboard</button><button className={page === 'products' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('products')}>สินค้า</button>{authUser.role === 'owner' && <button className={page === 'statuses' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('statuses')}><Icon name="settings" size={15} /> จัดการสถานะ</button>}{authUser.role === 'owner' && <button className={page === 'members' ? 'nav-link nav-link--active' : 'nav-link'} type="button" onClick={() => navigate('members')}><Icon name="members" size={15} /> สมาชิก</button>}</nav><div className="account-area"><span className="account-role"><strong>{authUser.fullName}</strong><small>{ROLE_META[authUser.role]?.label}</small></span><button className="button button--secondary button--small logout-button" type="button" onClick={handleLogout}>ออกจากระบบ</button></div></header><main className="dashboard">{success && <div className="alert alert--success" role="status">{success}<button type="button" onClick={() => setSuccess('')} aria-label="ปิดข้อความแจ้งเตือน"><Icon name="close" size={16} /></button></div>}{error && !isProductFormOpen && !isStatusFormOpen && !isMemberFormOpen && <div className="alert alert--error" role="alert">{error}<button type="button" onClick={() => setError('')} aria-label="ปิดข้อความผิดพลาด"><Icon name="close" size={16} /></button></div>}{page === 'dashboard' && <DashboardPage products={products} statuses={statuses} loading={loading} onCreate={openCreateProduct} onEdit={openEditProduct} onDelete={handleDeleteProduct} deletingId={deletingId} canDelete={canDeleteProducts} />}{page === 'products' && <ProductPage {...productTableProps} onCreate={openCreateProduct} />}{page === 'statuses' && authUser.role === 'owner' && <StatusesPage statuses={statuses} loading={loading} onCreate={openCreateStatus} onEdit={openEditStatus} onDelete={handleDeleteStatus} />}{page === 'members' && authUser.role === 'owner' && <MembersPage members={members} loading={membersLoading} currentUser={authUser} onCreate={openCreateMember} onEdit={openEditMember} onDeactivate={handleDeactivateMember} />}</main><ProductModal open={isProductFormOpen} editingProduct={editingProduct} form={productForm} activeStatuses={activeStatuses} submitting={submitting} error={error} onChange={handleProductChange} onSubmit={handleProductSubmit} onClose={() => setIsProductFormOpen(false)} /><StatusModal open={isStatusFormOpen} editingStatus={editingStatus} form={statusForm} submitting={submitting} error={error} onChange={handleStatusChange} onSubmit={handleStatusSubmit} onClose={() => setIsStatusFormOpen(false)} /><MemberModal open={isMemberFormOpen} editingMember={editingMember} form={memberForm} submitting={submitting} error={error} onChange={handleMemberChange} onSubmit={handleMemberSubmit} onClose={() => setIsMemberFormOpen(false)} /></div>;
 }
 
 export default App;
