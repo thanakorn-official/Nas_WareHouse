@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -113,20 +113,33 @@ const normalizeColor = color => {
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toUpperCase() : null;
 };
 
-const parseProductPayload = ({ name, quantity, statusId }) => {
+const parseProductPayload = ({ name, quantity, statusId, projectId, customFields = {}, tags = [] }, { allowZeroQuantity = false, allowLargeQuantity = false } = {}) => {
   const normalizedName = typeof name === 'string' ? name.trim() : '';
   const normalizedQuantity = Number(quantity);
   const normalizedStatusId = Number(statusId);
+  const normalizedProjectId = Number(projectId);
+  const normalizedTags = Array.isArray(tags)
+    ? [...new Set(tags.map(tag => String(tag).trim()).filter(Boolean))].slice(0, 50)
+    : null;
+  const normalizedCustomFields = customFields && typeof customFields === 'object' && !Array.isArray(customFields)
+    ? Object.fromEntries(Object.entries(customFields)
+      .map(([key, value]) => [String(key).trim().slice(0, 80), String(value ?? '').trim().slice(0, 1000)])
+      .filter(([key, value]) => key && value))
+    : null;
 
   if (!normalizedName) return { error: 'กรุณาระบุชื่อสินค้า' };
-  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity < 0) {
+  if (normalizedName.length > 100) return { error: 'ชื่อสินค้าต้องไม่เกิน 100 ตัวอักษร' };
+  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity < (allowZeroQuantity ? 0 : 1) || (!allowLargeQuantity && normalizedQuantity > 500)) {
     return { error: 'จำนวนสินค้าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป' };
   }
+  if (!Number.isInteger(normalizedProjectId) || normalizedProjectId < 1) return { error: 'กรุณาเลือกโปรเจคสินค้า' };
   if (!Number.isInteger(normalizedStatusId) || normalizedStatusId < 1) {
     return { error: 'กรุณาเลือกสถานะสินค้า' };
   }
+  if (!normalizedTags || normalizedTags.some(tag => tag.length > 60)) return { error: 'แท็กสินค้าไม่ถูกต้อง (ไม่เกิน 60 ตัวอักษรต่อแท็ก)' };
+  if (!normalizedCustomFields || Object.keys(normalizedCustomFields).length > 50) return { error: 'Custom Fields ไม่ถูกต้อง (เพิ่มได้ไม่เกิน 50 ช่อง)' };
 
-  return { value: { name: normalizedName, quantity: normalizedQuantity, statusId: normalizedStatusId } };
+  return { value: { name: normalizedName, quantity: normalizedQuantity, statusId: normalizedStatusId, projectId: normalizedProjectId, customFields: normalizedCustomFields, tags: normalizedTags } };
 };
 
 const parseStatusPayload = ({ name, color, isActive = true }) => {
@@ -139,6 +152,23 @@ const parseStatusPayload = ({ name, color, isActive = true }) => {
 
   return { value: { name: normalizedName, color: normalizedColor, isActive: Boolean(isActive) } };
 };
+
+const parseProjectPayload = ({ code, name }) => {
+  const normalizedCode = typeof code === 'string' ? code.trim().toLowerCase() : '';
+  const normalizedName = typeof name === 'string' ? name.trim() : '';
+  if (!/^[a-z0-9][a-z0-9_-]{0,19}$/.test(normalizedCode)) return { error: 'รหัสโปรเจคต้องมี 1–20 ตัว ใช้ a-z, 0-9, ขีดกลาง หรือขีดล่าง' };
+  if (!normalizedName || normalizedName.length > 120) return { error: 'กรุณาระบุชื่อโปรเจคไม่เกิน 120 ตัวอักษร' };
+  return { value: { code: normalizedCode, name: normalizedName } };
+};
+
+const publicProject = row => ({
+  id: row.id,
+  code: row.code,
+  name: row.name,
+  productCount: row.productCount ?? 0,
+  createdAt: row.createdAt,
+  createdBy: row.createdBy ?? null,
+});
 
 async function initializeDatabase() {
   await pool.query(`
@@ -170,6 +200,16 @@ async function initializeDatabase() {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id SERIAL PRIMARY KEY,
+      code VARCHAR(20) NOT NULL UNIQUE,
+      name VARCHAR(120) NOT NULL,
+      next_product_number INT NOT NULL DEFAULT 1,
+      created_by INT REFERENCES members(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS statuses (
       id SERIAL PRIMARY KEY,
       name VARCHAR(50) NOT NULL UNIQUE,
@@ -182,7 +222,7 @@ async function initializeDatabase() {
 
   const columns = await pool.query(`
     SELECT column_name FROM information_schema.columns
-    WHERE table_name = 'products' AND column_name IN ('price', 'status_id')
+    WHERE table_name = 'products' AND column_name IN ('price', 'status_id', 'project_id')
   `);
   const existingColumns = new Set(columns.rows.map(row => row.column_name));
   if (!existingColumns.has('status_id')) await pool.query('ALTER TABLE products ADD COLUMN status_id INT');
@@ -207,12 +247,48 @@ async function initializeDatabase() {
     END $$;
   `);
   await pool.query('ALTER TABLE products ALTER COLUMN status_id SET NOT NULL');
+  const existingProducts = existingColumns.has('project_id')
+    ? await pool.query('SELECT EXISTS (SELECT 1 FROM products WHERE project_id IS NULL) AS needed')
+    : await pool.query('SELECT EXISTS (SELECT 1 FROM products) AS needed');
+  let defaultProjectId = null;
+  if (existingProducts.rows[0].needed) {
+    const defaultProject = await pool.query(
+      `INSERT INTO projects (code, name) VALUES ('main', 'คลังหลัก')
+       ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code RETURNING id`,
+    );
+    defaultProjectId = defaultProject.rows[0].id;
+  }
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS project_id INT REFERENCES projects(id) ON DELETE RESTRICT');
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS product_code VARCHAR(40)');
+  await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_fields JSONB NOT NULL DEFAULT '{}'::jsonb");
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]');
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS added_by INT REFERENCES members(id) ON DELETE SET NULL');
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
+  await pool.query(
+    'UPDATE products SET project_id = $1 WHERE project_id IS NULL',
+    [defaultProjectId],
+  );
+  await pool.query(
+    `UPDATE products p SET product_code = pr.code || '-' || LPAD(p.id::text, 4, '0')
+     FROM projects pr WHERE pr.id = p.project_id AND p.product_code IS NULL`,
+  );
+  await pool.query('ALTER TABLE products ALTER COLUMN project_id SET NOT NULL');
+  await pool.query('ALTER TABLE products ALTER COLUMN product_code SET NOT NULL');
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS products_project_code_unique_idx ON products(project_id, product_code)');
+  await pool.query(
+    `UPDATE projects pr SET next_product_number = GREATEST(pr.next_product_number,
+      COALESCE((SELECT MAX(p.id) + 1 FROM products p WHERE p.project_id = pr.id), 1))`,
+  );
 }
 
 const productSelect = `
-  SELECT p.id, p.name, p.quantity,
+  SELECT p.id, p.name, p.quantity, p.product_code AS "productCode",
+    p.project_id AS "projectId", pr.code AS "projectCode", p.custom_fields AS "customFields", p.tags,
+    p.created_at AS "createdAt", p.added_by AS "addedById", m.full_name AS "addedBy",
     json_build_object('id', s.id, 'name', s.name, 'color', s.color, 'isActive', s.is_active) AS status
   FROM products p JOIN statuses s ON s.id = p.status_id
+  JOIN projects pr ON pr.id = p.project_id
+  LEFT JOIN members m ON m.id = p.added_by
 `;
 
 app.get('/api/auth/status', async (req, res) => {
@@ -281,6 +357,56 @@ app.use('/api', requireAuth);
 
 app.get('/api/auth/me', (req, res) => res.json(req.member));
 
+app.get('/api/projects', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT pr.id, pr.code, pr.name, pr.created_at AS "createdAt", m.full_name AS "createdBy",
+        COUNT(p.id)::int AS "productCount"
+      FROM projects pr LEFT JOIN products p ON p.project_id = pr.id
+      LEFT JOIN members m ON m.id = pr.created_by
+      GROUP BY pr.id, m.full_name ORDER BY pr.created_at DESC, pr.id DESC
+    `);
+    return res.json(result.rows.map(publicProject));
+  } catch (error) {
+    return res.status(500).json({ error: 'ไม่สามารถโหลดรายการโปรเจคได้' });
+  }
+});
+
+app.post('/api/projects', requireRoles('owner', 'manager'), async (req, res) => {
+  const parsed = parseProjectPayload(req.body || {});
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  try {
+    const { code, name } = parsed.value;
+    const result = await pool.query(
+      `INSERT INTO projects (code, name, created_by) VALUES ($1, $2, $3)
+       RETURNING id, code, name, created_at AS "createdAt"`,
+      [code, name, req.member.id],
+    );
+    return res.status(201).json(publicProject(result.rows[0]));
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'รหัสโปรเจคนี้มีในระบบแล้ว' });
+    return res.status(500).json({ error: 'ไม่สามารถสร้างโปรเจคได้' });
+  }
+});
+
+app.get('/api/projects/:id', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'รหัสโปรเจคไม่ถูกต้อง' });
+  try {
+    const result = await pool.query(`
+      SELECT pr.id, pr.code, pr.name, pr.created_at AS "createdAt", m.full_name AS "createdBy",
+        COUNT(p.id)::int AS "productCount"
+      FROM projects pr LEFT JOIN products p ON p.project_id = pr.id
+      LEFT JOIN members m ON m.id = pr.created_by
+      WHERE pr.id = $1 GROUP BY pr.id, m.full_name
+    `, [id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบโปรเจคนี้' });
+    return res.json(publicProject(result.rows[0]));
+  } catch (error) {
+    return res.status(500).json({ error: 'ไม่สามารถโหลดข้อมูลโปรเจคได้' });
+  }
+});
+
 app.get('/api/members', requireRoles('owner'), async (req, res) => {
   try {
     const result = await pool.query(
@@ -315,7 +441,7 @@ app.put('/api/members/:id', requireRoles('owner'), async (req, res) => {
   const parsed = parseMemberPayload(req.body);
   if (!id) return res.status(400).json({ error: 'รหัสสมาชิกไม่ถูกต้อง' });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  if (id === req.member.id && (parsed.value.role !== 'owner' || !parsed.value.isActive)) {
+  if (id === req.member.id && (parsed.value.role !== req.member.role || !parsed.value.isActive)) {
     return res.status(409).json({ error: 'ไม่สามารถลดสิทธิ์หรือปิดใช้งานบัญชีของตัวเองได้' });
   }
 
@@ -391,7 +517,12 @@ app.delete('/api/members/:id', requireRoles('owner'), async (req, res) => {
 
 app.get('/api/products', async (req, res) => {
   try {
-    const result = await pool.query(`${productSelect} ORDER BY p.id DESC`);
+    const projectId = req.query.projectId === undefined ? null : parseId(req.query.projectId);
+    if (req.query.projectId !== undefined && !projectId) return res.status(400).json({ error: 'รหัสโปรเจคไม่ถูกต้อง' });
+    const result = await pool.query(
+      `${productSelect}${projectId ? ' WHERE p.project_id = $1' : ''} ORDER BY p.id DESC`,
+      projectId ? [projectId] : [],
+    );
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: 'ไม่สามารถโหลดรายการสินค้าได้' });
@@ -399,34 +530,103 @@ app.get('/api/products', async (req, res) => {
 });
 
 app.post('/api/products', requireRoles('owner', 'manager', 'employee'), async (req, res) => {
-  const parsed = parseProductPayload(req.body);
+  const parsed = parseProductPayload(req.body || {});
   if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const client = await pool.connect();
   try {
-    const { name, quantity, statusId } = parsed.value;
-    const result = await pool.query(
-      `INSERT INTO products (name, quantity, status_id)
-       SELECT $1, $2, id FROM statuses WHERE id = $3 AND is_active = TRUE RETURNING id`,
-      [name, quantity, statusId],
-    );
-    if (!result.rowCount) return res.status(400).json({ error: 'สถานะนี้ไม่พร้อมใช้งาน' });
-    const product = await pool.query(`${productSelect} WHERE p.id = $1`, [result.rows[0].id]);
-    return res.status(201).json(product.rows[0]);
+    await client.query('BEGIN');
+    const project = await client.query('SELECT id, code, next_product_number FROM projects WHERE id = $1 FOR UPDATE', [parsed.value.projectId]);
+    if (!project.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '??????????????' });
+    }
+    const { name, quantity: count, statusId, customFields, tags } = parsed.value;
+    let nextNumber = project.rows[0].next_product_number;
+    const createdIds = [];
+    for (let index = 0; index < count; index += 1) {
+      const productCode = `${project.rows[0].code}-${String(nextNumber).padStart(4, '0')}`;
+      const inserted = await client.query(
+        `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
+         SELECT $1, $2, $3, 1, id, $5::jsonb, $6::text[], $7 FROM statuses WHERE id = $4 AND is_active = TRUE
+         RETURNING id`,
+        [parsed.value.projectId, productCode, name, statusId, JSON.stringify(customFields), tags, req.member.id],
+      );
+      if (!inserted.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '??????????????????????' });
+      }
+      createdIds.push(inserted.rows[0].id);
+      nextNumber += 1;
+    }
+    await client.query('UPDATE projects SET next_product_number = $1 WHERE id = $2', [nextNumber, parsed.value.projectId]);
+    const products = await client.query(`${productSelect} WHERE p.id = ANY($1::int[]) ORDER BY p.id`, [createdIds]);
+    await client.query('COMMIT');
+    return res.status(201).json({ createdCount: products.rowCount, products: products.rows });
   } catch (err) {
-    return res.status(500).json({ error: 'ไม่สามารถเพิ่มสินค้าได้' });
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: '???????????????????????' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/projects/:id/products/import', requireRoles('owner', 'manager', 'employee'), async (req, res) => {
+  const projectId = parseId(req.params.id);
+  if (!projectId) return res.status(400).json({ error: 'รหัสโปรเจคไม่ถูกต้อง' });
+  if (!Array.isArray(req.body?.items) || req.body.items.length < 1 || req.body.items.length > 500) {
+    return res.status(400).json({ error: 'ไฟล์นำเข้าต้องมีสินค้า 1–500 รายการต่อครั้ง' });
+  }
+  const parsedItems = req.body.items.map(item => parseProductPayload({ ...item, projectId }));
+  const invalidIndex = parsedItems.findIndex(item => item.error);
+  if (invalidIndex !== -1) return res.status(400).json({ error: `แถวที่ ${invalidIndex + 2}: ${parsedItems[invalidIndex].error}` });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const project = await client.query('SELECT id, code, next_product_number FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (!project.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'ไม่พบโปรเจคนี้' });
+    }
+    let nextNumber = project.rows[0].next_product_number;
+    const createdIds = [];
+    for (const { value } of parsedItems) {
+      for (let copy = 0; copy < value.quantity; copy += 1) {
+        const productCode = `${project.rows[0].code}-${String(nextNumber).padStart(4, '0')}`;
+        const inserted = await client.query(
+          `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
+           SELECT $1, $2, $3, 1, id, $5::jsonb, $6::text[], $7 FROM statuses WHERE id = $4 AND is_active = TRUE
+           RETURNING id`,
+          [projectId, productCode, value.name, value.statusId, JSON.stringify(value.customFields), value.tags, req.member.id],
+        );
+        if (!inserted.rowCount) throw new Error('inactive-status');
+        createdIds.push(inserted.rows[0].id);
+        nextNumber += 1;
+      }
+    }
+    await client.query('UPDATE projects SET next_product_number = $1 WHERE id = $2', [nextNumber, projectId]);
+    const products = await client.query(`${productSelect} WHERE p.id = ANY($1::int[]) ORDER BY p.id`, [createdIds]);
+    await client.query('COMMIT');
+    return res.status(201).json({ importedCount: products.rowCount, products: products.rows });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return res.status(400).json({ error: error.message.startsWith('สถานะสินค้าในรายการ') ? error.message : 'ไม่สามารถนำเข้าสินค้าได้' });
+  } finally {
+    client.release();
   }
 });
 
 app.put('/api/products/:id', requireRoles('owner', 'manager', 'employee'), async (req, res) => {
   const id = parseId(req.params.id);
-  const parsed = parseProductPayload(req.body);
+  const parsed = parseProductPayload(req.body || {}, { allowZeroQuantity: true, allowLargeQuantity: true });
   if (!id) return res.status(400).json({ error: 'รหัสสินค้าไม่ถูกต้อง' });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try {
-    const { name, quantity, statusId } = parsed.value;
+    const { name, quantity, statusId, customFields, tags } = parsed.value;
     const result = await pool.query(
-      `UPDATE products SET name = $1, quantity = $2, status_id = $3
-       WHERE id = $4 AND EXISTS (SELECT 1 FROM statuses WHERE id = $3 AND is_active = TRUE) RETURNING id`,
-      [name, quantity, statusId, id],
+      `UPDATE products SET name = $1, quantity = $2, status_id = $3, custom_fields = $4::jsonb, tags = $5
+       WHERE id = $6 AND EXISTS (SELECT 1 FROM statuses s WHERE s.id = $3 AND (s.is_active OR EXISTS (SELECT 1 FROM products current_product WHERE current_product.id = $6 AND current_product.status_id = s.id))) RETURNING id`,
+      [name, quantity, statusId, JSON.stringify(customFields), tags, id],
     );
     if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบสินค้าหรือสถานะไม่พร้อมใช้งาน' });
     const product = await pool.query(`${productSelect} WHERE p.id = $1`, [id]);
