@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -22,6 +22,7 @@ const DEFAULT_STATUSES = [
   { name: 'รอตรวจสอบ', color: '#1769e0', sortOrder: 3 },
 ];
 const ROLES = ['owner', 'manager', 'employee'];
+const MAX_PRODUCTS_PER_BATCH = 10000;
 const TOKEN_SECRET = process.env.AUTH_SECRET || crypto.randomBytes(32).toString('hex');
 const TOKEN_TTL_SECONDS = 60 * 60 * 12;
 
@@ -113,8 +114,9 @@ const normalizeColor = color => {
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toUpperCase() : null;
 };
 
-const parseProductPayload = ({ name, quantity, statusId, projectId, customFields = {}, tags = [] }, { allowZeroQuantity = false, allowLargeQuantity = false } = {}) => {
-  const normalizedName = typeof name === 'string' ? name.trim() : '';
+const parseProductPayload = ({ name, productCode, quantity, statusId, projectId, customFields = {}, tags = [] }, { allowZeroQuantity = false, allowLargeQuantity = false } = {}) => {
+  const normalizedName = (typeof name === 'string' ? name.trim() : '') || 'unaname';
+  const normalizedProductCode = typeof productCode === 'string' ? productCode.trim() : '';
   const normalizedQuantity = Number(quantity);
   const normalizedStatusId = Number(statusId);
   const normalizedProjectId = Number(projectId);
@@ -129,18 +131,46 @@ const parseProductPayload = ({ name, quantity, statusId, projectId, customFields
 
   if (!normalizedName) return { error: 'กรุณาระบุชื่อสินค้า' };
   if (normalizedName.length > 100) return { error: 'ชื่อสินค้าต้องไม่เกิน 100 ตัวอักษร' };
-  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity < (allowZeroQuantity ? 0 : 1) || (!allowLargeQuantity && normalizedQuantity > 500)) {
+  if (normalizedProductCode.length > 40 || /\s/.test(normalizedProductCode)) return { error: 'Product ID must be 40 characters or fewer and contain no spaces' };
+  if (normalizedProductCode && normalizedQuantity > 1 && !allowLargeQuantity) return { error: 'Set quantity to 1 when specifying a Product ID' };
+  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity < (allowZeroQuantity ? 0 : 1) || (!allowLargeQuantity && normalizedQuantity > MAX_PRODUCTS_PER_BATCH)) {
     return { error: 'จำนวนสินค้าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป' };
   }
   if (!Number.isInteger(normalizedProjectId) || normalizedProjectId < 1) return { error: 'กรุณาเลือกโปรเจคสินค้า' };
   if (!Number.isInteger(normalizedStatusId) || normalizedStatusId < 1) {
     return { error: 'กรุณาเลือกสถานะสินค้า' };
   }
-  if (!normalizedTags || normalizedTags.some(tag => tag.length > 60)) return { error: 'แท็กสินค้าไม่ถูกต้อง (ไม่เกิน 60 ตัวอักษรต่อแท็ก)' };
+  if (!normalizedTags || normalizedTags.some(tag => tag.length > 1024)) return { error: 'แท็กสินค้าไม่ถูกต้อง (ไม่เกิน 1,024 ตัวอักษรต่อแท็ก)' };
   if (!normalizedCustomFields || Object.keys(normalizedCustomFields).length > 50) return { error: 'Custom Fields ไม่ถูกต้อง (เพิ่มได้ไม่เกิน 50 ช่อง)' };
 
-  return { value: { name: normalizedName, quantity: normalizedQuantity, statusId: normalizedStatusId, projectId: normalizedProjectId, customFields: normalizedCustomFields, tags: normalizedTags } };
+  return { value: { name: normalizedName, productCode: normalizedProductCode || null, quantity: normalizedQuantity, statusId: normalizedStatusId, projectId: normalizedProjectId, customFields: normalizedCustomFields, tags: normalizedTags } };
 };
+
+const buildProductRows = (items, projectCode, startingNumber) => {
+  let nextNumber = startingNumber;
+  const rows = [];
+  for (const item of items) {
+    for (let copy = 0; copy < item.quantity; copy += 1) {
+      rows.push({
+        product_code: item.productCode || `${projectCode}-${String(nextNumber).padStart(4, '0')}`,
+        name: item.name,
+        status_id: item.statusId,
+        custom_fields: item.customFields,
+        tags: item.tags,
+      });
+      nextNumber += 1;
+    }
+  }
+  return { rows, nextNumber };
+};
+
+const insertProductRows = (client, projectId, rows, memberId) => client.query(
+  `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
+   SELECT $1, item.product_code, item.name, 1, status.id, item.custom_fields, item.tags, $3
+   FROM jsonb_to_recordset($2::jsonb) AS item(product_code text, name text, status_id integer, custom_fields jsonb, tags text[])
+   JOIN statuses status ON status.id = item.status_id AND status.is_active`,
+  [projectId, JSON.stringify(rows), memberId],
+);
 
 const parseStatusPayload = ({ name, color, isActive = true }) => {
   const normalizedName = typeof name === 'string' ? name.trim() : '';
@@ -407,6 +437,29 @@ app.get('/api/projects/:id', async (req, res) => {
   }
 });
 
+app.delete('/api/projects/:id', requireRoles('owner', 'manager'), async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid project ID.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const project = await client.query('SELECT id FROM projects WHERE id = $1 FOR UPDATE', [id]);
+    if (!project.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Project not found.' });
+    }
+    await client.query('DELETE FROM products WHERE project_id = $1', [id]);
+    await client.query('DELETE FROM projects WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    return res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Could not delete this project.' });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/members', requireRoles('owner'), async (req, res) => {
   try {
     const result = await pool.query(
@@ -519,11 +572,54 @@ app.get('/api/products', async (req, res) => {
   try {
     const projectId = req.query.projectId === undefined ? null : parseId(req.query.projectId);
     if (req.query.projectId !== undefined && !projectId) return res.status(400).json({ error: 'รหัสโปรเจคไม่ถูกต้อง' });
-    const result = await pool.query(
-      `${productSelect}${projectId ? ' WHERE p.project_id = $1' : ''} ORDER BY p.id DESC`,
-      projectId ? [projectId] : [],
-    );
-    res.json(result.rows);
+    const limitValue = Number.parseInt(req.query.limit || '100', 10);
+    const offsetValue = Number.parseInt(req.query.offset || '0', 10);
+    const limit = Number.isInteger(limitValue) ? Math.min(100, Math.max(1, limitValue)) : 100;
+    const offset = Number.isInteger(offsetValue) ? Math.max(0, offsetValue) : 0;
+    const query = String(req.query.q || '').trim().slice(0, 200);
+    const statusId = req.query.statusId ? parseId(req.query.statusId) : null;
+    const tag = String(req.query.tag || '').trim().slice(0, 1024);
+    if (req.query.statusId && !statusId) return res.status(400).json({ error: 'Invalid status ID.' });
+
+    const values = [];
+    const conditions = [];
+    if (projectId) {
+      values.push(projectId);
+      conditions.push(`p.project_id = $${values.length}`);
+    }
+    if (statusId) {
+      values.push(statusId);
+      conditions.push(`p.status_id = $${values.length}`);
+    }
+    if (tag) {
+      values.push(tag);
+      conditions.push(`p.tags @> ARRAY[$${values.length}]::text[]`);
+    }
+    if (query) {
+      values.push(`%${query}%`);
+      const queryParam = `$${values.length}`;
+      conditions.push(`(p.name ILIKE ${queryParam} OR p.product_code ILIKE ${queryParam} OR p.tags::text ILIKE ${queryParam} OR p.custom_fields::text ILIKE ${queryParam} OR COALESCE(m.full_name, '') ILIKE ${queryParam} OR s.name ILIKE ${queryParam})`);
+    }
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageValues = [...values, limit, offset];
+    const [result, countResult, tagResult, statusCountResult] = await Promise.all([
+      pool.query(`${productSelect} ${whereClause} ORDER BY p.id DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`, pageValues),
+      pool.query(`SELECT COUNT(*)::int AS total FROM products p JOIN statuses s ON s.id = p.status_id LEFT JOIN members m ON m.id = p.added_by ${whereClause}`, values),
+      projectId
+        ? pool.query('SELECT DISTINCT tag FROM products p CROSS JOIN LATERAL unnest(p.tags) AS tag_values(tag) WHERE p.project_id = $1 ORDER BY tag', [projectId])
+        : pool.query('SELECT DISTINCT tag FROM products p CROSS JOIN LATERAL unnest(p.tags) AS tag_values(tag) ORDER BY tag'),
+      projectId
+        ? pool.query('SELECT status_id AS id, COUNT(*)::int AS count FROM products WHERE project_id = $1 GROUP BY status_id', [projectId])
+        : pool.query('SELECT status_id AS id, COUNT(*)::int AS count FROM products GROUP BY status_id'),
+    ]);
+    return res.json({
+      items: result.rows,
+      total: countResult.rows[0].total,
+      limit,
+      offset,
+      tags: tagResult.rows.map(row => row.tag),
+      statusCounts: Object.fromEntries(statusCountResult.rows.map(row => [row.id, row.count])),
+    });
   } catch (err) {
     res.status(500).json({ error: 'ไม่สามารถโหลดรายการสินค้าได้' });
   }
@@ -540,30 +636,18 @@ app.post('/api/products', requireRoles('owner', 'manager', 'employee'), async (r
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '??????????????' });
     }
-    const { name, quantity: count, statusId, customFields, tags } = parsed.value;
-    let nextNumber = project.rows[0].next_product_number;
-    const createdIds = [];
-    for (let index = 0; index < count; index += 1) {
-      const productCode = `${project.rows[0].code}-${String(nextNumber).padStart(4, '0')}`;
-      const inserted = await client.query(
-        `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
-         SELECT $1, $2, $3, 1, id, $5::jsonb, $6::text[], $7 FROM statuses WHERE id = $4 AND is_active = TRUE
-         RETURNING id`,
-        [parsed.value.projectId, productCode, name, statusId, JSON.stringify(customFields), tags, req.member.id],
-      );
-      if (!inserted.rowCount) {
+    const { rows, nextNumber } = buildProductRows([parsed.value], project.rows[0].code, project.rows[0].next_product_number);
+    const inserted = await insertProductRows(client, parsed.value.projectId, rows, req.member.id);
+    if (inserted.rowCount !== rows.length) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: '??????????????????????' });
-      }
-      createdIds.push(inserted.rows[0].id);
-      nextNumber += 1;
     }
     await client.query('UPDATE projects SET next_product_number = $1 WHERE id = $2', [nextNumber, parsed.value.projectId]);
-    const products = await client.query(`${productSelect} WHERE p.id = ANY($1::int[]) ORDER BY p.id`, [createdIds]);
     await client.query('COMMIT');
-    return res.status(201).json({ createdCount: products.rowCount, products: products.rows });
+    return res.status(201).json({ createdCount: inserted.rowCount });
   } catch (err) {
     await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'Product ID already exists in this project.' });
     return res.status(500).json({ error: '???????????????????????' });
   } finally {
     client.release();
@@ -573,11 +657,13 @@ app.post('/api/products', requireRoles('owner', 'manager', 'employee'), async (r
 app.post('/api/projects/:id/products/import', requireRoles('owner', 'manager', 'employee'), async (req, res) => {
   const projectId = parseId(req.params.id);
   if (!projectId) return res.status(400).json({ error: 'รหัสโปรเจคไม่ถูกต้อง' });
-  if (!Array.isArray(req.body?.items) || req.body.items.length < 1 || req.body.items.length > 500) {
-    return res.status(400).json({ error: 'ไฟล์นำเข้าต้องมีสินค้า 1–500 รายการต่อครั้ง' });
+  if (!Array.isArray(req.body?.items) || req.body.items.length < 1 || req.body.items.length > MAX_PRODUCTS_PER_BATCH) {
+    return res.status(400).json({ error: 'Import must contain between 1 and 10,000 rows per request.' });
   }
   const parsedItems = req.body.items.map(item => parseProductPayload({ ...item, projectId }));
   const invalidIndex = parsedItems.findIndex(item => item.error);
+  const totalItems = parsedItems.reduce((sum, item) => sum + (item.value?.quantity || 0), 0);
+  if (totalItems > MAX_PRODUCTS_PER_BATCH) return res.status(400).json({ error: 'Import is limited to 10,000 items per request.' });
   if (invalidIndex !== -1) return res.status(400).json({ error: `แถวที่ ${invalidIndex + 2}: ${parsedItems[invalidIndex].error}` });
 
   const client = await pool.connect();
@@ -588,28 +674,15 @@ app.post('/api/projects/:id/products/import', requireRoles('owner', 'manager', '
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'ไม่พบโปรเจคนี้' });
     }
-    let nextNumber = project.rows[0].next_product_number;
-    const createdIds = [];
-    for (const { value } of parsedItems) {
-      for (let copy = 0; copy < value.quantity; copy += 1) {
-        const productCode = `${project.rows[0].code}-${String(nextNumber).padStart(4, '0')}`;
-        const inserted = await client.query(
-          `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
-           SELECT $1, $2, $3, 1, id, $5::jsonb, $6::text[], $7 FROM statuses WHERE id = $4 AND is_active = TRUE
-           RETURNING id`,
-          [projectId, productCode, value.name, value.statusId, JSON.stringify(value.customFields), value.tags, req.member.id],
-        );
-        if (!inserted.rowCount) throw new Error('inactive-status');
-        createdIds.push(inserted.rows[0].id);
-        nextNumber += 1;
-      }
-    }
+    const { rows, nextNumber } = buildProductRows(parsedItems.map(item => item.value), project.rows[0].code, project.rows[0].next_product_number);
+    const inserted = await insertProductRows(client, projectId, rows, req.member.id);
+    if (inserted.rowCount !== rows.length) throw new Error('inactive-status');
     await client.query('UPDATE projects SET next_product_number = $1 WHERE id = $2', [nextNumber, projectId]);
-    const products = await client.query(`${productSelect} WHERE p.id = ANY($1::int[]) ORDER BY p.id`, [createdIds]);
     await client.query('COMMIT');
-    return res.status(201).json({ importedCount: products.rowCount, products: products.rows });
+    return res.status(201).json({ importedCount: inserted.rowCount });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error.code === '23505') return res.status(409).json({ error: 'A Product ID in this file already exists in this project.' });
     return res.status(400).json({ error: error.message.startsWith('สถานะสินค้าในรายการ') ? error.message : 'ไม่สามารถนำเข้าสินค้าได้' });
   } finally {
     client.release();
@@ -622,16 +695,17 @@ app.put('/api/products/:id', requireRoles('owner', 'manager', 'employee'), async
   if (!id) return res.status(400).json({ error: 'รหัสสินค้าไม่ถูกต้อง' });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try {
-    const { name, quantity, statusId, customFields, tags } = parsed.value;
+    const { name, productCode, quantity, statusId, customFields, tags } = parsed.value;
     const result = await pool.query(
-      `UPDATE products SET name = $1, quantity = $2, status_id = $3, custom_fields = $4::jsonb, tags = $5
-       WHERE id = $6 AND EXISTS (SELECT 1 FROM statuses s WHERE s.id = $3 AND (s.is_active OR EXISTS (SELECT 1 FROM products current_product WHERE current_product.id = $6 AND current_product.status_id = s.id))) RETURNING id`,
-      [name, quantity, statusId, JSON.stringify(customFields), tags, id],
+      `UPDATE products SET product_code = COALESCE($1, product_code), name = $2, quantity = $3, status_id = $4, custom_fields = $5::jsonb, tags = $6
+       WHERE id = $7 AND EXISTS (SELECT 1 FROM statuses s WHERE s.id = $4 AND (s.is_active OR EXISTS (SELECT 1 FROM products current_product WHERE current_product.id = $7 AND current_product.status_id = s.id))) RETURNING id`,
+      [productCode, name, quantity, statusId, JSON.stringify(customFields), tags, id],
     );
     if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบสินค้าหรือสถานะไม่พร้อมใช้งาน' });
     const product = await pool.query(`${productSelect} WHERE p.id = $1`, [id]);
     return res.json(product.rows[0]);
   } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Product ID already exists in this project.' });
     return res.status(500).json({ error: 'ไม่สามารถแก้ไขสินค้าได้' });
   }
 });

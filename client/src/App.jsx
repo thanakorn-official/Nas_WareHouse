@@ -4,7 +4,7 @@ import readXlsxFile from 'read-excel-file/browser';
 import './App.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-const EMPTY_PRODUCT = { name: '', quantity: '1', statusId: '', projectId: '', customFields: [{ key: '', value: '' }], tags: [], tagInput: '' };
+const EMPTY_PRODUCT = { name: '', productCode: '', quantity: '1', statusId: '', projectId: '', customFields: [{ key: '', value: '' }], tags: [], tagInput: '' };
 const EMPTY_PROJECT = { code: '', name: '' };
 const EMPTY_STATUS = { name: '', color: '#1769E0', isActive: true };
 const EMPTY_MEMBER = { fullName: '', username: '', role: 'employee', password: '', isActive: true };
@@ -54,19 +54,45 @@ function StatusBadge({ status }) {
   return <span className="stock-badge" style={{ '--status-color': status?.color || '#1769E0' }}><span />{status?.name || 'ไม่ระบุ'}</span>;
 }
 
-function ProductTable({ products, loading, searchTerm, onSearchChange, onEdit, onDelete, deletingId, canDelete = true }) {
-  const filteredProducts = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
-    return query ? products.filter(product => [product.name, product.productCode, ...(product.tags || [])].some(value => String(value || '').toLowerCase().includes(query))) : products;
-  }, [products, searchTerm]);
+function ProductTable({ products, statuses, loading, searchTerm, onSearchChange, onClearSearch, statusFilter, tagFilter, onStatusFilterChange, onTagFilterChange, onEdit, onDelete, deletingId, canDelete = true, availableTags, totalCount, page, pageSize, onPageChange }) {
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const firstItem = totalCount ? ((page - 1) * pageSize) + 1 : 0;
+  const lastItem = Math.min(page * pageSize, totalCount);
+  const hasActiveFilters = Boolean(searchTerm.trim() || statusFilter || tagFilter);
 
-  return <section className="products-panel"><div className="panel-heading"><div><h2>รายการสินค้า</h2><p>จัดการข้อมูลสินค้าและสถานะในคลัง</p></div><label className="search-field"><Icon name="search" size={18} /><span className="sr-only">ค้นหาสินค้า</span><input type="search" value={searchTerm} onChange={onSearchChange} placeholder="ค้นหาชื่อ รหัสสินค้า หรือแท็ก..." /></label></div><div className="table-wrap"><table className="products-table project-products-table"><caption className="sr-only">รายการสินค้าในโปรเจค</caption><thead><tr><th>สินค้า</th><th>จำนวน</th><th>สถานะ</th><th>Tags / Custom Fields</th><th>เพิ่มโดย / เมื่อ</th><th>การจัดการ</th></tr></thead><tbody>{loading && <tr><td className="table-message" colSpan="6"><span className="spinner" />กำลังโหลดข้อมูล...</td></tr>}{!loading && filteredProducts.length === 0 && <tr><td className="table-message" colSpan="6">{searchTerm ? 'ไม่พบสินค้าที่ตรงกับคำค้นหา' : 'ยังไม่มีสินค้าในโปรเจคนี้'}</td></tr>}{!loading && filteredProducts.map(product => <tr key={product.id}><td data-label="สินค้า"><div className="product-name"><span className="product-avatar"><Icon name="box" size={16} /></span><span><strong>{product.name}</strong><small>{product.productCode || `#${product.id}`}</small></span></div></td><td data-label="จำนวน"><strong>{Number(product.quantity).toLocaleString('th-TH')}</strong> ชิ้น</td><td data-label="สถานะ"><StatusBadge status={product.status} /></td><td data-label="Tags / Custom Fields"><div className="product-extra">{(product.tags || []).map(tag => <span className="product-tag" key={tag}>{tag}</span>)}{Object.entries(product.customFields || {}).map(([key, value]) => <span className="product-custom-field" key={key}><strong>{key}:</strong> {value}</span>)}</div></td><td data-label="เพิ่มโดย / เมื่อ"><span className="product-created"><strong>{product.addedBy || '—'}</strong><small>{product.createdAt ? new Date(product.createdAt).toLocaleString('th-TH') : '—'}</small></span></td><td data-label="การจัดการ"><div className="row-actions"><button className="icon-button icon-button--edit" type="button" onClick={() => onEdit(product)} aria-label={`แก้ไข ${product.name}`}><Icon name="edit" size={17} /></button>{canDelete && <button className="icon-button icon-button--delete" type="button" onClick={() => onDelete(product)} disabled={deletingId === product.id} aria-label={`ลบ ${product.name}`}><Icon name="trash" size={17} /></button>}</div></td></tr>)}</tbody></table></div><div className="panel-footer">แสดง {filteredProducts.length.toLocaleString('th-TH')} จาก {products.length.toLocaleString('th-TH')} รายการ</div></section>;
+  return <section className="products-panel">
+    <div className="panel-heading">
+      <div><h2>รายการสินค้า</h2><p>ค้นหาชื่อ รหัสสินค้า แท็ก หรือ Fields</p></div>
+      <div className="product-table-controls">
+        <label className="search-field"><Icon name="search" size={18} /><span className="sr-only">ค้นหาสินค้าและแท็ก</span><input type="search" value={searchTerm} onChange={onSearchChange} placeholder="ชื่อสินค้า รหัส แท็ก หรือ Fields..." /></label>
+        <select className="product-filter-select" aria-label="กรองตามสถานะ" value={statusFilter} onChange={event => onStatusFilterChange(event.target.value)}><option value="">ทุกสถานะ</option>{statuses.map(status => <option value={String(status.id)} key={status.id}>{status.name}</option>)}</select>
+        <select className="product-filter-select" aria-label="กรองตามแท็ก" value={tagFilter} onChange={event => onTagFilterChange(event.target.value)}><option value="">ทุกแท็ก</option>{availableTags.map(tag => <option value={tag} key={tag}>{tag}</option>)}</select>
+        {hasActiveFilters && <button className="filter-clear-button" type="button" onClick={() => { onStatusFilterChange(''); onTagFilterChange(''); onClearSearch(); }}>ล้างตัวกรอง</button>}
+      </div>
+    </div>
+    <div className="table-wrap"><table className="products-table project-products-table">
+      <caption className="sr-only">รายการสินค้าในโปรเจกต์นี้</caption>
+      <thead><tr><th>สินค้า</th><th>จำนวน</th><th>สถานะ</th><th>แท็ก / Fields</th><th>เพิ่มโดย / วันที่</th><th>จัดการ</th></tr></thead>
+      <tbody>
+        {loading && <tr><td className="table-message" colSpan="6"><span className="spinner" />กำลังโหลดสินค้า...</td></tr>}
+        {!loading && products.length === 0 && <tr><td className="table-message" colSpan="6">{hasActiveFilters ? 'ไม่พบสินค้าที่ตรงกับคำค้นหาหรือตัวกรอง' : 'ยังไม่มีสินค้าในโปรเจกต์นี้'}</td></tr>}
+        {!loading && products.map(product => <tr key={product.id}>
+          <td data-label="สินค้า"><div className="product-name"><span className="product-avatar"><Icon name="box" size={16} /></span><span><strong>{product.name}</strong><small>{product.productCode || ('#' + product.id)}</small></span></div></td>
+          <td data-label="จำนวน"><strong>{Number(product.quantity).toLocaleString('th-TH')}</strong> ชิ้น</td>
+          <td data-label="สถานะ"><StatusBadge status={product.status} /></td>
+          <td data-label="แท็ก / Fields"><div className="product-extra">{(product.tags || []).map(tag => <span className="product-tag" key={tag}>{tag}</span>)}{Object.entries(product.customFields || {}).map(([key, value]) => <span className="product-custom-field" key={key}><strong>{key}:</strong> {value}</span>)}</div></td>
+          <td data-label="เพิ่มโดย / วันที่"><span className="product-created"><strong>{product.addedBy || '—'}</strong><small>{product.createdAt ? new Date(product.createdAt).toLocaleString('th-TH') : '—'}</small></span></td>
+          <td data-label="จัดการ"><div className="row-actions"><button className="icon-button icon-button--edit" type="button" onClick={() => onEdit(product)} aria-label={'แก้ไข ' + product.name}><Icon name="edit" size={17} /></button>{canDelete && <button className="icon-button icon-button--delete" type="button" onClick={() => onDelete(product)} disabled={deletingId === product.id} aria-label={'ลบ ' + product.name}><Icon name="trash" size={17} /></button>}</div></td>
+        </tr>)}
+      </tbody>
+    </table></div>
+    <div className="panel-footer product-pagination"><span>แสดง {firstItem.toLocaleString()}-{lastItem.toLocaleString()} จาก {totalCount.toLocaleString()} รายการ</span><div><button className="button button--secondary button--small" type="button" onClick={() => onPageChange(page - 1)} disabled={loading || page <= 1}>ก่อนหน้า</button><span>หน้า {page.toLocaleString()} จาก {totalPages.toLocaleString()}</span><button className="button button--secondary button--small" type="button" onClick={() => onPageChange(page + 1)} disabled={loading || page >= totalPages}>ถัดไป</button></div></div>
+  </section>;
 }
-
-function StatusPieChart({ products, statuses, loading }) {
+function StatusPieChart({ products, statuses, loading, productStatusCounts = {} }) {
   const statusCounts = statuses.map(status => ({
     ...status,
-    count: products.filter(product => String(product.status?.id) === String(status.id)).length,
+    count: Number(productStatusCounts[status.id] ?? products.filter(product => String(product.status?.id) === String(status.id)).length),
   }));
   const total = statusCounts.reduce((sum, status) => sum + status.count, 0);
   let currentAngle = 0;
@@ -100,16 +126,40 @@ function StatusPieChart({ products, statuses, loading }) {
   </section>;
 }
 
-function ProjectsPage({ projects, loading, canCreate, onCreate, onOpen }) {
-  return <><section className="welcome-section"><div><p className="eyebrow">พื้นที่ทำงาน</p><h1>โปรเจค</h1><p className="welcome-copy">เลือกโปรเจคเพื่อดูและจัดการสินค้าในพื้นที่นั้น</p></div>{canCreate && <button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> สร้างโปรเจคใหม่</button>}</section><section className="project-grid" aria-label="รายการโปรเจค">{loading && <p className="table-message">กำลังโหลดโปรเจค...</p>}{!loading && projects.map(project => <button className="project-card" key={project.id} type="button" onClick={() => onOpen(project)}><span className="project-card__icon"><Icon name="package" size={21} /></span><span className="project-card__body"><strong>{project.name}</strong><small>รหัสโปรเจค {project.code}</small></span><span className="project-card__count"><strong>{Number(project.productCount).toLocaleString('th-TH')}</strong><small>รายการสินค้า</small></span><span className="project-card__arrow">→</span></button>)}{!loading && projects.length === 0 && <div className="project-empty"><span className="project-empty__icon"><Icon name="package" size={23} /></span><h2>ยังไม่มีโปรเจค</h2><p>สร้างโปรเจคเพื่อเริ่มจัดการสินค้าแยกเป็นชุดงาน</p>{canCreate && <button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> สร้างโปรเจคใหม่</button>}</div>}</section></>;
+function ProjectsPage({ projects, loading, canCreate, canDelete, deletingProjectId, onCreate, onOpen, onDelete }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const filteredProjects = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return query ? projects.filter(project => (project.name + ' ' + project.code).toLowerCase().includes(query)) : projects;
+  }, [projects, searchTerm]);
+
+  return <>
+    <section className="welcome-section"><div><p className="eyebrow">Workspace</p><h1>Projects</h1><p className="welcome-copy">Choose a project to view and manage its inventory.</p></div>{canCreate && <button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> Create project</button>}</section>
+    <div className="project-list-tools"><label className="search-field"><Icon name="search" size={18} /><span className="sr-only">Search projects</span><input type="search" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Search project name or code..." /></label><small>Showing {filteredProjects.length.toLocaleString()} of {projects.length.toLocaleString()} projects</small></div>
+    <section className="project-grid" aria-label="Projects">
+      {loading && <p className="table-message">Loading projects...</p>}
+      {!loading && filteredProjects.map(project => <article className="project-card" key={project.id}>
+        <button className="project-card__open" type="button" onClick={() => onOpen(project)}><span className="project-card__icon"><Icon name="package" size={21} /></span><span className="project-card__body"><strong>{project.name}</strong><small>Project code {project.code}</small></span><span className="project-card__count"><strong>{Number(project.productCount).toLocaleString()}</strong><small>products</small></span><span className="project-card__arrow">&rarr;</span></button>
+        {canDelete && <button className="icon-button icon-button--delete project-card__delete" type="button" onClick={() => onDelete(project)} disabled={deletingProjectId !== null} aria-label={'Delete project ' + project.name}><Icon name="trash" size={17} /></button>}
+      </article>)}
+      {!loading && projects.length === 0 && <div className="project-empty"><span className="project-empty__icon"><Icon name="package" size={23} /></span><h2>No projects yet</h2><p>Create a project to start managing a separate inventory.</p>{canCreate && <button className="button button--primary" type="button" onClick={onCreate}><Icon name="plus" size={19} /> Create project</button>}</div>}
+      {!loading && projects.length > 0 && filteredProjects.length === 0 && <div className="project-empty"><h2>No projects found</h2><p>Try another project name or code.</p></div>}
+    </section>
+  </>;
 }
 
-function ProjectDetailPage({ project, products, statuses, loading, searchTerm, onSearchChange, onBack, onCreateProduct, onImport, onEdit, onDelete, deletingId, canDelete }) {
-  if (!project && loading) return <div className="project-loading"><span className="spinner" />กำลังโหลดโปรเจค...</div>;
-  if (!project) return <section className="project-not-found"><h1>ไม่พบโปรเจค</h1><p>โปรเจคนี้อาจถูกลบหรือไม่มีสิทธิ์เข้าถึง</p><button className="button button--secondary" type="button" onClick={onBack}>กลับไปหน้าโปรเจค</button></section>;
-  return <><section className="welcome-section project-detail-heading"><div><button className="back-link" type="button" onClick={onBack}>← โปรเจคทั้งหมด</button><p className="eyebrow">โปรเจค {project.code}</p><h1>{project.name}</h1><p className="welcome-copy">สินค้าในโปรเจคนี้จะแยกรหัสตาม Prefix {project.code}-</p></div><div className="project-actions"><button className="button button--secondary" type="button" onClick={onImport}>Import Excel</button><button className="button button--primary" type="button" onClick={onCreateProduct}><Icon name="plus" size={19} /> เพิ่มสินค้า</button></div></section><StatusPieChart products={products} statuses={statuses} loading={loading} /><ProductTable products={products} loading={loading} searchTerm={searchTerm} onSearchChange={onSearchChange} onEdit={onEdit} onDelete={onDelete} deletingId={deletingId} canDelete={canDelete} /></>;
+function ProjectDetailPage({ project, products, statuses, loading, searchTerm, onSearchChange, onClearSearch, onBack, onCreateProduct, onImport, onEdit, onDelete, deletingId, canDelete, productStatusCounts, productStatusFilter, productTagFilter, onStatusFilterChange, onTagFilterChange, availableProductTags, productsTotal, productPage, onPageChange }) {
+  if (!project && loading) return <div className="project-loading"><span className="spinner" />กำลังโหลดโปรเจกต์...</div>;
+  if (!project) return <section className="project-not-found"><h1>ไม่พบโปรเจกต์</h1><p>โปรเจกต์นี้อาจถูกลบหรือคุณไม่มีสิทธิ์เข้าถึง</p><button className="button button--secondary" type="button" onClick={onBack}>กลับไปหน้าโปรเจกต์</button></section>;
+  return <>
+    <section className="welcome-section project-detail-heading">
+      <div><button className="back-link" type="button" onClick={onBack}>&larr; โปรเจกต์ทั้งหมด</button><p className="eyebrow">โปรเจกต์ {project.code}</p><h1>{project.name}</h1><p className="welcome-copy">รหัสสินค้าในโปรเจกต์นี้ใช้ Prefix {project.code}-</p></div>
+      <div className="project-actions"><button className="button button--secondary" type="button" onClick={onImport}>Import Excel</button><button className="button button--primary" type="button" onClick={onCreateProduct}><Icon name="plus" size={19} /> เพิ่มสินค้า</button></div>
+    </section>
+    <StatusPieChart products={products} statuses={statuses} loading={loading} productStatusCounts={productStatusCounts} />
+    <ProductTable products={products} statuses={statuses} loading={loading} searchTerm={searchTerm} onSearchChange={onSearchChange} onClearSearch={onClearSearch} statusFilter={productStatusFilter} tagFilter={productTagFilter} onStatusFilterChange={onStatusFilterChange} onTagFilterChange={onTagFilterChange} availableTags={availableProductTags} totalCount={productsTotal} page={productPage} pageSize={100} onPageChange={onPageChange} onEdit={onEdit} onDelete={onDelete} deletingId={deletingId} canDelete={canDelete} />
+  </>;
 }
-
 function ProjectModal({ open, form, submitting, error, onChange, onSubmit, onClose }) {
   if (!open) return null;
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="project-form-title"><div className="modal__header"><div><p className="eyebrow">พื้นที่ทำงาน</p><h2 id="project-form-title">สร้างโปรเจคใหม่</h2></div><button className="icon-button icon-button--close" type="button" onClick={onClose} aria-label="ปิดหน้าต่าง"><Icon name="close" size={20} /></button></div>{error && <div className="form-error" role="alert">{error}</div>}<form onSubmit={onSubmit}><label className="form-field"><span>รหัสโปรเจค <b>*</b></span><input name="code" type="text" value={form.code} onChange={onChange} maxLength="20" autoComplete="off" placeholder="เช่น coj" required /><small className="field-help">ใช้ a–z, 0–9, ขีดกลาง หรือขีดล่าง รหัสนี้จะเป็น Prefix ของสินค้า</small></label><label className="form-field"><span>ชื่อโปรเจค <b>*</b></span><input name="name" type="text" value={form.name} onChange={onChange} maxLength="120" autoFocus required /></label><div className="modal__actions"><button className="button button--secondary" type="button" onClick={onClose}>ยกเลิก</button><button className="button button--primary" type="submit" disabled={submitting}>{submitting && <span className="spinner spinner--light" />}สร้างโปรเจค</button></div></form></section></div>;
@@ -118,70 +168,213 @@ function ProjectModal({ open, form, submitting, error, onChange, onSubmit, onClo
 const normalizeExcelHeader = value => String(value ?? '').trim().toLowerCase().replace(/[\s_\-./()]+/g, '');
 const isTagHeader = value => /(?:^|[^a-z])tags?(?:$|[^a-z])|แท็ก/i.test(String(value ?? ''));
 
+function inferExcelMappings(headers, dataRows) {
+  const normalized = headers.map(normalizeExcelHeader);
+  const findColumn = (aliases, thaiPattern) => normalized.findIndex(header => aliases.includes(header) || (thaiPattern && thaiPattern.test(header)));
+  const hasCodeValues = index => {
+    if (index < 0) return false;
+    const values = dataRows.slice(0, 20).map(row => String(row[index] ?? '').trim()).filter(Boolean);
+    return values.length > 0 && values.filter(value => /^[a-z0-9]{3,}[-_][a-z0-9-]{3,}$/i.test(value)).length / values.length >= 0.6;
+  };
+  let nameIndex = findColumn(['productname', 'product', 'name', 'item'], /^(?:\u0e0a\u0e37\u0e48\u0e2d|\u0e0a\u0e37\u0e48\u0e2d\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32)$/);
+  let productCodeIndex = findColumn(['productid', 'productcode', 'assetid', 'id', 'code'], /\u0e23\u0e2b\u0e31\u0e2a/);
+  if (productCodeIndex < 0 && hasCodeValues(nameIndex)) productCodeIndex = nameIndex;
+  if (productCodeIndex < 0) {
+    const codeValueIndex = headers.findIndex((_, index) => hasCodeValues(index));
+    if (codeValueIndex >= 0) productCodeIndex = codeValueIndex;
+  }
+  if (nameIndex === productCodeIndex) nameIndex = -1;
+  if (nameIndex < 0) nameIndex = headers.findIndex((_, index) => index !== productCodeIndex && headers[index]);
+  const quantityIndex = findColumn(['quantity', 'qty', 'amount'], /\u0e08\u0e33\u0e19\u0e27\u0e19/);
+  const statusIndex = findColumn(['status', 'productstatus'], /\u0e2a\u0e16\u0e32\u0e19\u0e30/);
+  const duplicateHeaders = new Set(normalized.filter((header, index) => header && normalized.indexOf(header) !== index));
+  return headers.map((header, index) => {
+    if (!header) return 'ignore';
+    if (index === nameIndex) return 'name';
+    if (index === productCodeIndex) return 'productCode';
+    if (index === quantityIndex) return 'quantity';
+    if (index === statusIndex) return 'status';
+    return isTagHeader(header) || duplicateHeaders.has(normalized[index]) ? 'tag' : 'field';
+  });
+}
+
 function ExcelImportModal({ open, project, activeStatuses, submitting, apiError, onImport, onClearError, onClose }) {
-  const [items, setItems] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [mappings, setMappings] = useState([]);
+  const [workbookSheets, setWorkbookSheets] = useState([]);
+  const [sheetConfigs, setSheetConfigs] = useState({});
+  const [selectedSheetIndex, setSelectedSheetIndex] = useState('0');
+  const [selectedSheetIndices, setSelectedSheetIndices] = useState(['0']);
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState('');
   const [reading, setReading] = useState(false);
 
   if (!open) return null;
 
+  const prepareSheet = sheet => {
+    const sheetRows = Array.isArray(sheet?.data)
+      ? sheet.data
+      : Array.isArray(sheet?.rows)
+        ? sheet.rows
+        : Array.isArray(sheet)
+          ? sheet
+          : [];
+    const normalizedRows = sheetRows.map(row => Array.isArray(row) ? row : [row]);
+    if (normalizedRows.length < 2) throw new Error('The Excel sheet must contain a header row and at least one data row.');
+    const nextHeaders = normalizedRows[0].map(value => String(value ?? '').trim());
+    const nextRows = normalizedRows.slice(1).filter(row => row.some(value => String(value ?? '').trim() !== ''));
+    if (!nextRows.length) throw new Error('No product rows were found in this sheet.');
+    return { headers: nextHeaders, rows: nextRows, mappings: inferExcelMappings(nextHeaders, nextRows) };
+  };
+
+  const activateSheet = config => {
+    setHeaders(config.headers);
+    setRows(config.rows);
+    setMappings(config.mappings);
+  };
+
   const handleFileChange = async event => {
     const file = event.target.files?.[0];
     if (!file) return;
     onClearError();
     setError('');
-    setItems([]);
+    setHeaders([]);
+    setRows([]);
+    setMappings([]);
+    setWorkbookSheets([]);
+    setSheetConfigs({});
+    setSelectedSheetIndex('0');
+    setSelectedSheetIndices([]);
     setFileName(file.name);
-    if (file.size > 10 * 1024 * 1024) { setError('ไฟล์ต้องมีขนาดไม่เกิน 10 MB'); return; }
+    if (file.size > 10 * 1024 * 1024) { setError('File must be 10 MB or smaller.'); return; }
     setReading(true);
     try {
-      const rows = await readXlsxFile(file);
-      if (rows.length < 2) throw new Error('ไฟล์ต้องมีแถวหัวข้อและข้อมูลสินค้าอย่างน้อยหนึ่งรายการ');
-      const headers = rows[0].map(value => String(value ?? '').trim());
-      const normalized = headers.map(normalizeExcelHeader);
-      const findColumn = aliases => normalized.findIndex(header => aliases.includes(header));
-      const nameIndex = findColumn(['ชื่อสินค้า', 'ชื่อ', 'สินค้า', 'รายการสินค้า', 'productname', 'product', 'name', 'item']);
-      if (nameIndex < 0) throw new Error('ไม่พบหัวข้อชื่อสินค้า (ใช้ “ชื่อสินค้า”, “Product Name” หรือ “Name”)');
-      const quantityIndex = findColumn(['จำนวนสินค้า', 'จำนวนคงเหลือ', 'จำนวน', 'quantity', 'qty', 'amount']);
-      const statusIndex = findColumn(['ชื่อสถานะ', 'สถานะ', 'สถานะสินค้า', 'status', 'productstatus']);
-      const duplicateHeaders = new Set(normalized.filter((header, index) => header && normalized.indexOf(header) !== index));
-      const tagIndexes = [];
-      const customIndexes = [];
-      headers.forEach((header, index) => {
-        if (!header || [nameIndex, quantityIndex, statusIndex].includes(index)) return;
-        if (isTagHeader(header) || duplicateHeaders.has(normalized[index])) tagIndexes.push(index);
-        else customIndexes.push(index);
+      const parsedWorkbook = await readXlsxFile(file);
+      const sheets = Array.isArray(parsedWorkbook)
+        && parsedWorkbook.some(sheet => sheet && typeof sheet === 'object' && ('data' in sheet || 'rows' in sheet))
+        ? parsedWorkbook
+        : [{ sheet: 'Sheet 1', data: parsedWorkbook }];
+      const usableSheets = [];
+      const nextSheetConfigs = {};
+      sheets.forEach(sheet => {
+        try {
+          const config = prepareSheet(sheet);
+          nextSheetConfigs[String(usableSheets.length)] = config;
+          usableSheets.push(sheet);
+        } catch {
+          // Skip empty worksheets; a workbook may contain tabs without product rows.
+        }
       });
-      const defaultStatusId = activeStatuses[0]?.id;
-      if (!defaultStatusId) throw new Error('ต้องมีสถานะที่ใช้งานได้ก่อนนำเข้าสินค้า');
-      const imported = rows.slice(1).filter(row => row.some(value => String(value ?? '').trim() !== '')).map(row => {
-        const name = String(row[nameIndex] ?? '').trim();
-        const rawQuantity = quantityIndex < 0 || String(row[quantityIndex] ?? '').trim() === '' ? 1 : Number(row[quantityIndex]);
-        const rawStatus = statusIndex < 0 ? '' : String(row[statusIndex] ?? '').trim().toLowerCase();
-        const matchingStatus = activeStatuses.find(status => status.name.trim().toLowerCase() === rawStatus);
-        const tags = tagIndexes.flatMap(index => String(row[index] ?? '').split(/[,;|\n]/).map(tag => tag.trim()).filter(Boolean));
-        const customFields = Object.fromEntries(customIndexes.map(index => [headers[index], String(row[index] ?? '').trim()]).filter(([key, value]) => key && value));
-        return { name, quantity: rawQuantity, statusId: matchingStatus?.id || defaultStatusId, invalidStatus: Boolean(rawStatus && !matchingStatus), tags: [...new Set(tags)], customFields };
-      });
-      if (!imported.length) throw new Error('ไม่พบแถวข้อมูลสินค้าในไฟล์');
-      if (imported.length > 500) throw new Error('นำเข้าได้สูงสุด 500 รายการต่อครั้ง');
-      const missingNameRow = imported.findIndex(item => !item.name);
-      if (missingNameRow >= 0) throw new Error(`กรุณาระบุชื่อสินค้าในแถวที่ ${missingNameRow + 2}`);
-      const invalidQuantityRow = imported.findIndex(item => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 500);
-      if (invalidQuantityRow >= 0) throw new Error(`จำนวนสินค้าในแถวที่ ${invalidQuantityRow + 2} ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป`);
-      const invalidStatusRow = imported.findIndex(item => item.invalidStatus);
-      if (invalidStatusRow >= 0) throw new Error(`ไม่พบสถานะที่ตรงกับข้อมูลในแถวที่ ${invalidStatusRow + 2}`);
-      setItems(imported.map(({ name, quantity, statusId, tags, customFields }) => ({ name, quantity, statusId, tags, customFields })));
+      if (!usableSheets.length) throw new Error('No worksheets were found in this Excel file.');
+      setWorkbookSheets(usableSheets);
+      setSheetConfigs(nextSheetConfigs);
+      setSelectedSheetIndex('0');
+      setSelectedSheetIndices(['0']);
+      activateSheet(nextSheetConfigs['0']);
     } catch (parseError) {
-      setError(parseError.message || 'อ่านไฟล์ Excel ไม่สำเร็จ');
+      setError(parseError.message || 'Could not read this Excel file.');
     } finally {
       setReading(false);
       event.target.value = '';
     }
   };
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !submitting && !reading) onClose(); }}><section className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-form-title"><div className="modal__header"><div><p className="eyebrow">โปรเจค {project.code}</p><h2 id="import-form-title">นำเข้าสินค้าจาก Excel</h2></div><button className="icon-button icon-button--close" type="button" onClick={onClose} aria-label="ปิดหน้าต่าง" disabled={submitting}><Icon name="close" size={20} /></button></div><p className="import-help">หัวตารางชื่อสินค้า / จำนวน / สถานะจะใช้เป็นข้อมูลหลัก หัวข้อที่มีคำว่า Tag หรือชื่อหัวข้อซ้ำจะเป็นแท็ก ส่วนหัวข้ออื่นจะบันทึกเป็น Custom Fields</p><label className="file-picker"><span>{fileName || 'เลือกไฟล์ Excel (.xlsx)'}</span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFileChange} disabled={reading || submitting} /></label>{reading && <p className="import-state"><span className="spinner" />กำลังอ่านไฟล์...</p>}{error && <div className="form-error" role="alert">{error}</div>}{apiError && <div className="form-error" role="alert">{apiError}</div>}{items.length > 0 && <div className="import-preview"><strong>พร้อมนำเข้า {items.length.toLocaleString('th-TH')} รายการ</strong><small>สินค้าแรก: {items[0].name}{items.length > 1 ? ` · สินค้าสุดท้าย: ${items[items.length - 1].name}` : ''}</small></div>}<div className="modal__actions"><button className="button button--secondary" type="button" onClick={onClose} disabled={submitting}>ยกเลิก</button><button className="button button--primary" type="button" onClick={() => onImport(items)} disabled={!items.length || submitting || reading}>{submitting && <span className="spinner spinner--light" />}นำเข้า {items.length ? `${items.length.toLocaleString('th-TH')} รายการ` : 'สินค้า'}</button></div></section></div>;
+  const handleSheetChange = event => {
+    const index = event.target.value;
+    setSelectedSheetIndex(index);
+    setError('');
+    const config = sheetConfigs[index];
+    if (config) {
+      activateSheet(config);
+    } else {
+      setHeaders([]);
+      setRows([]);
+      setMappings([]);
+      setError('Could not read this worksheet.');
+    }
+  };
+
+  const updateMapping = (columnIndex, nextKind) => {
+    const nextMappings = mappings.map((kind, index) => {
+      if (index === columnIndex) return nextKind;
+      if (['name', 'productCode', 'quantity', 'status'].includes(nextKind) && kind === nextKind) return 'field';
+      return kind;
+    });
+    setMappings(nextMappings);
+    setSheetConfigs(current => ({
+      ...current,
+      [selectedSheetIndex]: { ...current[selectedSheetIndex], mappings: nextMappings },
+    }));
+    setError('');
+  };
+
+  const toggleSheetSelection = index => {
+    const key = String(index);
+    setSelectedSheetIndices(current => current.includes(key) ? current.filter(value => value !== key) : [...current, key].sort((left, right) => Number(left) - Number(right)));
+    setError('');
+  };
+
+  const mapSheetProducts = config => {
+    if (!config) return [];
+    const { headers: sheetHeaders, rows: sheetRows, mappings: sheetMappings } = config;
+    const nameIndex = sheetMappings.indexOf('name');
+    const codeIndex = sheetMappings.indexOf('productCode');
+    const quantityIndex = sheetMappings.indexOf('quantity');
+    const statusIndex = sheetMappings.indexOf('status');
+    const defaultStatusId = activeStatuses[0]?.id;
+    return sheetRows.map(row => {
+      const name = nameIndex < 0 ? '' : String(row[nameIndex] ?? '').trim();
+      const rawCode = codeIndex < 0 ? '' : String(row[codeIndex] ?? '').trim();
+      const rawQuantity = quantityIndex < 0 || String(row[quantityIndex] ?? '').trim() === '' ? 1 : Number(row[quantityIndex]);
+      const rawStatus = statusIndex < 0 ? '' : String(row[statusIndex] ?? '').trim();
+      const matchingStatus = activeStatuses.find(status => status.name.trim().toLowerCase() === rawStatus.toLowerCase() || String(status.id) === rawStatus);
+      const tags = sheetMappings.flatMap((kind, index) => kind === 'tag' ? String(row[index] ?? '').split(/[,;|]/).map(tag => tag.trim()).filter(Boolean) : []);
+      const customFields = {};
+      sheetMappings.forEach((kind, index) => {
+        if (kind !== 'field') return;
+        const value = String(row[index] ?? '').trim();
+        if (!value) return;
+        const baseKey = sheetHeaders[index] || ('Field ' + (index + 1));
+        let key = baseKey;
+        let suffix = 2;
+        while (Object.prototype.hasOwnProperty.call(customFields, key)) key = baseKey + ' (' + suffix++ + ')';
+        customFields[key] = value;
+      });
+      return { name: name || 'unaname', productCode: rawCode || undefined, quantity: rawQuantity, statusId: matchingStatus?.id || defaultStatusId, invalidStatus: Boolean(rawStatus && !matchingStatus), tags: [...new Set(tags)], customFields };
+    });
+  };
+
+  const mappedProducts = () => selectedSheetIndices.flatMap(index => mapSheetProducts(sheetConfigs[index]));
+
+  const importProducts = () => {
+    const items = mappedProducts();
+    if (!selectedSheetIndices.length) { setError('Select at least one worksheet to import.'); return; }
+    if (!activeStatuses.length) { setError('Create or enable a product status before importing.'); return; }
+    const invalidQuantity = items.findIndex(item => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 10000);
+    if (invalidQuantity >= 0) { setError('Quantity must be a whole number from 1 to 10,000 on spreadsheet row ' + (invalidQuantity + 2) + '.'); return; }
+    if (items.length > 10000) { setError('Import is limited to 10,000 spreadsheet rows at a time.'); return; }
+    if (items.some(item => item.productCode && item.quantity > 1)) { setError('Rows with a Product ID must have quantity 1.'); return; }
+    if (items.reduce((sum, item) => sum + item.quantity, 0) > 10000) { setError('Import is limited to 10,000 items at a time.'); return; }
+    const invalidStatus = items.findIndex(item => item.invalidStatus);
+    if (invalidStatus >= 0) { setError('Status was not found for spreadsheet row ' + (invalidStatus + 2) + '.'); return; }
+    onImport(items);
+  };
+
+  const selectedProducts = mappedProducts();
+  const totalRows = selectedProducts.length;
+  const totalItems = selectedProducts.reduce((sum, item) => sum + (Number.isInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0), 0);
+  const mappingOptions = [
+    ['ignore', '\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e49'],
+    ['name', '\u0e0a\u0e37\u0e48\u0e2d\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32'],
+    ['productCode', 'Product ID'],
+    ['quantity', '\u0e08\u0e33\u0e19\u0e27\u0e19'],
+    ['status', '\u0e2a\u0e16\u0e32\u0e19\u0e30'],
+    ['tag', '\u0e41\u0e17\u0e47\u0e01'],
+    ['field', 'Fields'],
+  ];
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !submitting && !reading) onClose(); }}><section className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-form-title"><div className="modal__header"><div><p className="eyebrow">Project {project.code}</p><h2 id="import-form-title">Import Excel</h2></div><button className="icon-button icon-button--close" type="button" onClick={onClose} aria-label="Close" disabled={submitting}><Icon name="close" size={20} /></button></div><p className="import-help">Choose how each spreadsheet column should be imported. Product IDs from your file will be kept and can be edited later.</p><label className="file-picker"><span>{fileName || 'Select Excel file (.xlsx)'}</span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFileChange} disabled={reading || submitting} /></label>{workbookSheets.length > 0 && <fieldset className="import-sheet-selection"><legend>Worksheets to import</legend><div>{workbookSheets.map((sheet, index) => <label key={index}><input type="checkbox" checked={selectedSheetIndices.includes(String(index))} onChange={() => toggleSheetSelection(index)} disabled={reading || submitting} /><span>{sheet.sheet || sheet.name || ('Sheet ' + (index + 1))}</span></label>)}</div></fieldset>}{workbookSheets.length > 1 && <label className="form-field import-sheet-picker"><span>Worksheet column mapping</span><select value={selectedSheetIndex} onChange={handleSheetChange} disabled={reading || submitting}>{workbookSheets.map((sheet, index) => <option value={String(index)} key={index}>{sheet.sheet || sheet.name || ('Sheet ' + (index + 1))}</option>)}</select></label>}{reading && <p className="import-state"><span className="spinner" />Reading file...</p>}{headers.length > 0 && <div className="import-column-mappings"><div className="import-column-mappings__heading"><strong>Column mapping</strong><small>Tag and Custom Field can be assigned to multiple columns.</small></div>{headers.map((header, index) => <label className="import-column-mapping" key={index}><span><strong>{header || ('Column ' + (index + 1))}</strong><small>{String(rows[0]?.[index] ?? '').slice(0, 60) || 'Empty sample'}</small></span><select value={mappings[index] || 'ignore'} onChange={event => updateMapping(index, event.target.value)}>{mappingOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>)}</div>}{error && <div className="form-error" role="alert">{error}</div>}{apiError && <div className="form-error" role="alert">{apiError}</div>}{selectedProducts.length > 0 && <div className="import-preview"><strong>Ready to import {totalRows.toLocaleString('th-TH')} spreadsheet rows ({totalItems.toLocaleString('th-TH')} items)</strong><small>First item: {selectedProducts[0]?.name || 'Choose a Product name column'}</small></div>}<div className="modal__actions"><button className="button button--secondary" type="button" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button--primary" type="button" onClick={importProducts} disabled={!selectedProducts.length || submitting || reading}>{submitting && <span className="spinner spinner--light" />}Import {totalItems ? totalItems.toLocaleString('th-TH') + ' items' : 'products'}</button></div></section></div>;
 }
 
 function StatusesPage({ statuses, loading, onCreate, onEdit, onDelete }) {
@@ -227,7 +420,7 @@ function ProductModal({ open, project, editingProduct, form, activeStatuses, sub
   if (!open) return null;
   const selectableStatuses = [...activeStatuses];
   if (editingProduct?.status && !selectableStatuses.some(status => status.id === editingProduct.status.id)) selectableStatuses.push(editingProduct.status);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal product-modal" role="dialog" aria-modal="true" aria-labelledby="product-form-title"><div className="modal__header"><div><p className="eyebrow">{project ? `โปรเจค ${project.code}` : 'ข้อมูลสินค้า'}</p><h2 id="product-form-title">{editingProduct ? 'แก้ไขสินค้า' : 'เพิ่มสินค้า'}</h2></div><button className="icon-button icon-button--close" type="button" onClick={onClose} aria-label="ปิดหน้าต่าง"><Icon name="close" size={20} /></button></div>{error && <div className="form-error" role="alert">{error}</div>}{!editingProduct && project && <p className="product-code-hint">รหัสสินค้าจะถูกสร้างแยกตาม item: <strong>{project.code}-0001, {project.code}-0002...</strong></p>}<form onSubmit={onSubmit}><label className="form-field"><span>ชื่อสินค้า <b>*</b></span><input name="name" type="text" value={form.name} onChange={onChange} maxLength="100" autoFocus required /></label><div className="form-grid"><label className="form-field"><span>{editingProduct ? 'จำนวน item ในแถวนี้' : 'จำนวน item ที่ต้องการสร้าง'} <b>*</b></span><input name="quantity" type="number" min={editingProduct ? '0' : '1'} max={editingProduct ? undefined : '500'} step="1" value={form.quantity} onChange={onChange} required readOnly={Boolean(editingProduct)} /><small className="field-help">{editingProduct ? 'จำนวน item เดิมคงไว้ หากต้องการเพิ่ม ใช้ปุ่ม “เพิ่มสินค้า”' : 'ระบบจะสร้าง item แยกแถวพร้อมรหัสแต่ละรายการ'}</small></label><label className="form-field"><span>สถานะ <b>*</b></span><select name="statusId" value={form.statusId} onChange={onChange} required><option value="">เลือกสถานะ</option>{selectableStatuses.map(status => <option key={status.id} value={status.id}>{status.name}{!status.isActive ? ' (ปิดใช้งาน)' : ''}</option>)}</select></label></div><div className="form-field"><span>Tags</span><div className="tag-editor">{form.tags.length > 0 && <div className="tag-editor__chips">{form.tags.map(tag => <span className="tag-editor__chip" key={tag}>{tag}<button type="button" onClick={() => onRemoveTag(tag)} aria-label={`ลบแท็ก ${tag}`}>&times;</button></span>)}</div>}<input name="tagInput" type="text" value={form.tagInput} onChange={onChange} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onAddTag(form.tagInput); } }} placeholder="พิมพ์แท็กแล้วกด Enter" maxLength="60" /><small className="field-help">กด Enter เพื่อเพิ่มแท็กทีละรายการ</small></div></div><div className="custom-fields-editor"><div className="custom-fields-editor__heading"><div><strong>Custom Fields</strong><small>ข้อมูลเพิ่มเติม เช่น หมายเลขครุภัณฑ์หรือ Serial Number</small></div><button className="button button--secondary button--small" type="button" onClick={onAddCustomField}>เพิ่มช่อง</button></div>{form.customFields.map((field, index) => <div className="custom-field-row" key={index}><input aria-label="ชื่อ Custom Field" value={field.key} onChange={event => onCustomFieldChange(index, 'key', event.target.value)} placeholder="ชื่อช่อง เช่น Serial Number" maxLength="80" /><input aria-label="ค่า Custom Field" value={field.value} onChange={event => onCustomFieldChange(index, 'value', event.target.value)} placeholder="ค่า" maxLength="1000" /><button className="icon-button icon-button--delete" type="button" onClick={() => onRemoveCustomField(index)} aria-label="ลบช่อง"><Icon name="trash" size={16} /></button></div>)}</div><div className="modal__actions"><button className="button button--secondary" type="button" onClick={onClose}>ยกเลิก</button><button className="button button--primary" type="submit" disabled={submitting}>{submitting && <span className="spinner spinner--light" />}{editingProduct ? 'บันทึกการแก้ไข' : 'เพิ่มสินค้า'}</button></div></form></section></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal product-modal" role="dialog" aria-modal="true" aria-labelledby="product-form-title"><div className="modal__header"><div><p className="eyebrow">{project ? `โปรเจค ${project.code}` : 'ข้อมูลสินค้า'}</p><h2 id="product-form-title">{editingProduct ? 'แก้ไขสินค้า' : 'เพิ่มสินค้า'}</h2></div><button className="icon-button icon-button--close" type="button" onClick={onClose} aria-label="ปิดหน้าต่าง"><Icon name="close" size={20} /></button></div>{error && <div className="form-error" role="alert">{error}</div>}{editingProduct && <label className="form-field"><span>&#x0E23;&#x0E2B;&#x0E31;&#x0E2A;&#x0E2A;&#x0E34;&#x0E19;&#x0E04;&#x0E49;&#x0E32 / ID <b>*</b></span><input name="productCode" type="text" value={form.productCode} onChange={onChange} maxLength="40" required /><small className="field-help">Product IDs must be unique within this project.</small></label>}{!editingProduct && project && <p className="product-code-hint">รหัสสินค้าจะถูกสร้างแยกตาม item: <strong>{project.code}-0001, {project.code}-0002...</strong></p>}<form onSubmit={onSubmit}><label className="form-field"><span>ชื่อสินค้า</span><input name="name" type="text" value={form.name} onChange={onChange} maxLength="100" autoFocus placeholder="เว้นว่างเพื่อใช้ชื่อ unaname" /></label><div className="form-grid"><label className="form-field"><span>{editingProduct ? 'จำนวน item ในแถวนี้' : 'จำนวน item ที่ต้องการสร้าง'} <b>*</b></span><input name="quantity" type="number" min={editingProduct ? '0' : '1'} max={editingProduct ? undefined : '10000'} step="1" value={form.quantity} onChange={onChange} required readOnly={Boolean(editingProduct)} /><small className="field-help">{editingProduct ? 'จำนวน item เดิมคงไว้ หากต้องการเพิ่ม ใช้ปุ่ม “เพิ่มสินค้า”' : 'ระบบจะสร้าง item แยกแถวพร้อมรหัสแต่ละรายการ'}</small></label><label className="form-field"><span>สถานะ <b>*</b></span><select name="statusId" value={form.statusId} onChange={onChange} required><option value="">เลือกสถานะ</option>{selectableStatuses.map(status => <option key={status.id} value={status.id}>{status.name}{!status.isActive ? ' (ปิดใช้งาน)' : ''}</option>)}</select></label></div><div className="form-field"><span>Tags</span><div className="tag-editor">{form.tags.length > 0 && <div className="tag-editor__chips">{form.tags.map(tag => <span className="tag-editor__chip" key={tag}>{tag}<button type="button" onClick={() => onRemoveTag(tag)} aria-label={`ลบแท็ก ${tag}`}>&times;</button></span>)}</div>}<input name="tagInput" type="text" value={form.tagInput} onChange={onChange} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onAddTag(form.tagInput); } }} placeholder="พิมพ์แท็กแล้วกด Enter" maxLength="1024" /><small className="field-help">กด Enter เพื่อเพิ่มแท็กทีละรายการ</small></div></div><div className="custom-fields-editor"><div className="custom-fields-editor__heading"><div><strong>Custom Fields</strong><small>ข้อมูลเพิ่มเติม เช่น หมายเลขครุภัณฑ์หรือ Serial Number</small></div><button className="button button--secondary button--small" type="button" onClick={onAddCustomField}>เพิ่มช่อง</button></div>{form.customFields.map((field, index) => <div className="custom-field-row" key={index}><input aria-label="ชื่อ Custom Field" value={field.key} onChange={event => onCustomFieldChange(index, 'key', event.target.value)} placeholder="ชื่อช่อง เช่น Serial Number" maxLength="80" /><input aria-label="ค่า Custom Field" value={field.value} onChange={event => onCustomFieldChange(index, 'value', event.target.value)} placeholder="ค่า" maxLength="1000" /><button className="icon-button icon-button--delete" type="button" onClick={() => onRemoveCustomField(index)} aria-label="ลบช่อง"><Icon name="trash" size={16} /></button></div>)}</div><div className="modal__actions"><button className="button button--secondary" type="button" onClick={onClose}>ยกเลิก</button><button className="button button--primary" type="submit" disabled={submitting}>{submitting && <span className="spinner spinner--light" />}{editingProduct ? 'บันทึกการแก้ไข' : 'เพิ่มสินค้า'}</button></div></form></section></div>;
 }
 
 function StatusModal({ open, editingStatus, form, submitting, error, onChange, onSubmit, onClose }) {
@@ -243,6 +436,14 @@ function App() {
   const [authUser, setAuthUser] = useState(null);
   const [authError, setAuthError] = useState('');
   const [products, setProducts] = useState([]);
+  const [productsTotal, setProductsTotal] = useState(0);
+  const [availableProductTags, setAvailableProductTags] = useState([]);
+  const [productStatusCounts, setProductStatusCounts] = useState({});
+  const [productPage, setProductPage] = useState(1);
+  const [productStatusFilter, setProductStatusFilter] = useState('');
+  const [productTagFilter, setProductTagFilter] = useState('');
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productReloadKey, setProductReloadKey] = useState(0);
   const [projects, setProjects] = useState([]);
   const [statuses, setStatuses] = useState([]);
   const [members, setMembers] = useState([]);
@@ -262,6 +463,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [deletingProjectId, setDeletingProjectId] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [membersLoading, setMembersLoading] = useState(false);
@@ -315,11 +517,20 @@ function App() {
     };
   }, []);
 
-  const fetchProducts = useCallback(async projectId => {
+  const fetchProducts = useCallback(async (projectId, params = {}, signal) => {
     try {
-      const response = await axios.get(`${API_URL}/api/products`, { params: projectId ? { projectId } : {} });
-      setProducts(response.data);
+      const response = await axios.get(`${API_URL}/api/products`, { params: { projectId, limit: 100, ...params }, signal });
+      if (signal?.aborted) return;
+      setProducts(response.data.items || []);
+      const total = Number(response.data.total) || 0;
+      setProductsTotal(total);
+      const requestedPage = Math.floor((Number(params.offset) || 0) / 100) + 1;
+      const lastPage = Math.max(1, Math.ceil(total / 100));
+      if (requestedPage > lastPage) setProductPage(current => current === requestedPage ? lastPage : current);
+      setAvailableProductTags(response.data.tags || []);
+      setProductStatusCounts(response.data.statusCounts || {});
     } catch (requestError) {
+      if (signal?.aborted) return;
       setError(getErrorMessage(requestError));
     }
   }, []);
@@ -357,16 +568,24 @@ function App() {
   const refreshData = useCallback(async (projectId = selectedProjectId) => {
     setLoading(true);
     setError('');
-    if (!projectId) setProducts([]);
-    await Promise.all([projectId ? fetchProducts(projectId) : Promise.resolve(), fetchStatuses(), fetchProjects()]);
+    if (!projectId) {
+      setProducts([]);
+      setProductsTotal(0);
+      setAvailableProductTags([]);
+      setProductStatusCounts({});
+    }
+    await Promise.all([fetchStatuses(), fetchProjects()]);
     setLoading(false);
-  }, [fetchProducts, fetchProjects, fetchStatuses, selectedProjectId]);
+  }, [fetchProjects, fetchStatuses, selectedProjectId]);
 
   useEffect(() => {
     const handleHashChange = () => {
       setPage(pageFromHash(window.location.hash));
       setSelectedProjectId(projectIdFromHash(window.location.hash));
       setSearchTerm('');
+      setProductPage(1);
+      setProductStatusFilter('');
+      setProductTagFilter('');
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
@@ -377,6 +596,25 @@ function App() {
     const timer = window.setTimeout(() => refreshData(page === 'project-detail' ? selectedProjectId : null), 0);
     return () => window.clearTimeout(timer);
   }, [authState, page, refreshData, selectedProjectId]);
+
+  useEffect(() => {
+    if (authState !== 'app' || page !== 'project-detail' || !selectedProjectId) return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setProductsLoading(true);
+      await fetchProducts(selectedProjectId, {
+        offset: (productPage - 1) * 100,
+        q: searchTerm.trim(),
+        statusId: productStatusFilter,
+        tag: productTagFilter,
+      }, controller.signal);
+      if (!controller.signal.aborted) setProductsLoading(false);
+    }, searchTerm ? 250 : 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [authState, fetchProducts, page, productPage, productReloadKey, productStatusFilter, productTagFilter, searchTerm, selectedProjectId]);
 
   useEffect(() => {
     if (authState !== 'app' || page !== 'members' || authUser?.role !== 'owner') return;
@@ -436,7 +674,7 @@ function App() {
   const openEditProduct = product => {
     setEditingProduct(product);
     const customFields = Object.entries(product.customFields || {}).map(([key, value]) => ({ key, value: String(value) }));
-    setProductForm({ projectId: String(product.projectId), name: product.name, quantity: String(product.quantity), statusId: String(product.status?.id || ''), customFields: customFields.length ? customFields : [{ key: '', value: '' }], tags: product.tags || [], tagInput: '' });
+    setProductForm({ projectId: String(product.projectId), productCode: product.productCode || '', name: product.name, quantity: String(product.quantity), statusId: String(product.status?.id || ''), customFields: customFields.length ? customFields : [{ key: '', value: '' }], tags: product.tags || [], tagInput: '' });
     setError('');
     setIsProductFormOpen(true);
   };
@@ -507,6 +745,31 @@ function App() {
     }
   };
 
+  const handleDeleteProject = async project => {
+    const itemCount = Number(project.productCount) || 0;
+    const confirmation = 'Delete project "' + project.name + '" and all ' + itemCount.toLocaleString() + ' related products? This cannot be undone.';
+    if (!window.confirm(confirmation)) return;
+    try {
+      setDeletingProjectId(project.id);
+      setError('');
+      await axios.delete(API_URL + '/api/projects/' + project.id);
+      setProjects(current => current.filter(item => item.id !== project.id));
+      setProducts(current => current.filter(item => String(item.projectId) !== String(project.id)));
+      if (String(selectedProjectId) === String(project.id)) {
+        setProductsTotal(0);
+        setAvailableProductTags([]);
+        setProductStatusCounts({});
+      }
+      if (String(selectedProjectId) === String(project.id)) navigate('projects');
+      setSuccess('Project deleted.');
+      setSearchTerm('');
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    } finally {
+      setDeletingProjectId(null);
+    }
+  };
+
   const handleMemberSubmit = async event => {
     event.preventDefault();
     try {
@@ -544,13 +807,14 @@ function App() {
     event.preventDefault();
     const payload = {
       projectId: Number(productForm.projectId),
-      name: productForm.name.trim(),
+      name: productForm.name.trim() || 'unaname',
+      productCode: editingProduct ? productForm.productCode.trim() : undefined,
       quantity: editingProduct ? Number(editingProduct.quantity) : Number(productForm.quantity),
       statusId: Number(productForm.statusId),
       customFields: Object.fromEntries(productForm.customFields.map(field => [field.key.trim(), field.value.trim()]).filter(([key, value]) => key && value)),
       tags: productForm.tags,
     };
-    if (!payload.projectId || !payload.name || !Number.isInteger(payload.quantity) || payload.quantity < (editingProduct ? 0 : 1) || payload.quantity > (editingProduct ? Number.MAX_SAFE_INTEGER : 500) || !payload.statusId) {
+    if (!payload.projectId || !Number.isInteger(payload.quantity) || payload.quantity < (editingProduct ? 0 : 1) || payload.quantity > (editingProduct ? Number.MAX_SAFE_INTEGER : 10000) || !payload.statusId) {
       setError('กรุณาตรวจสอบชื่อสินค้า จำนวน และสถานะให้ถูกต้อง');
       return;
     }
@@ -565,6 +829,8 @@ function App() {
         setSuccess('เพิ่มสินค้าใหม่เรียบร้อยแล้ว');
       }
       setIsProductFormOpen(false);
+      setProductPage(1);
+      setProductReloadKey(current => current + 1);
       await refreshData(payload.projectId);
     } catch (requestError) {
       setError(getErrorMessage(requestError));
@@ -580,6 +846,8 @@ function App() {
       setError('');
       const response = await axios.post(`${API_URL}/api/projects/${activeProject.id}/products/import`, { items });
       setIsImportOpen(false);
+      setProductPage(1);
+      setProductReloadKey(current => current + 1);
       setSuccess(`นำเข้าสินค้า ${response.data.importedCount.toLocaleString('th-TH')} รายการเรียบร้อยแล้ว`);
       await refreshData(activeProject.id);
     } catch (requestError) {
@@ -606,6 +874,7 @@ function App() {
         setSuccess('เพิ่มสถานะเรียบร้อยแล้ว');
       }
       setIsStatusFormOpen(false);
+      setProductReloadKey(current => current + 1);
       await refreshData();
     } catch (requestError) {
       setError(getErrorMessage(requestError));
@@ -620,6 +889,9 @@ function App() {
       setDeletingId(product.id);
       await axios.delete(`${API_URL}/api/products/${product.id}`);
       setProducts(current => current.filter(item => item.id !== product.id));
+      setProductsTotal(current => Math.max(0, current - 1));
+      if (products.length === 1 && productPage > 1) setProductPage(current => Math.max(1, current - 1));
+      setProductReloadKey(current => current + 1);
       setSuccess('ลบสินค้าเรียบร้อยแล้ว');
       await fetchProjects();
     } catch (requestError) {
@@ -634,6 +906,7 @@ function App() {
     try {
       await axios.delete(`${API_URL}/api/statuses/${status.id}`);
       setSuccess('ลบสถานะเรียบร้อยแล้ว');
+      setProductReloadKey(current => current + 1);
       await refreshData();
     } catch (requestError) {
       setError(getErrorMessage(requestError));
@@ -660,9 +933,9 @@ function App() {
     <main className="dashboard">
       {success && <div className="alert alert--success" role="status">{success}<button type="button" onClick={() => setSuccess('')} aria-label="ปิดข้อความแจ้งเตือน"><Icon name="close" size={16} /></button></div>}
       {error && !isProductFormOpen && !isStatusFormOpen && !isMemberFormOpen && !isProjectFormOpen && !isImportOpen && <div className="alert alert--error" role="alert">{error}<button type="button" onClick={() => setError('')} aria-label="ปิดข้อความผิดพลาด"><Icon name="close" size={16} /></button></div>}
-      {page === 'projects' && <ProjectsPage projects={projects} loading={loading} canCreate={canCreateProjects} onCreate={openCreateProject} onOpen={openProject} />}
+      {page === 'projects' && <ProjectsPage projects={projects} loading={loading} canCreate={canCreateProjects} canDelete={canCreateProjects} deletingProjectId={deletingProjectId} onCreate={openCreateProject} onOpen={openProject} onDelete={handleDeleteProject} />}
       {page === 'roles' && <RolesPage />}
-      {page === 'project-detail' && <ProjectDetailPage project={activeProject} products={projectProducts} statuses={statuses} loading={loading} searchTerm={searchTerm} onSearchChange={event => setSearchTerm(event.target.value)} onBack={() => navigate('projects')} onCreateProduct={openCreateProduct} onImport={() => { setError(''); setIsImportOpen(true); }} onEdit={openEditProduct} onDelete={handleDeleteProduct} deletingId={deletingId} canDelete={canDeleteProducts} />}
+      {page === 'project-detail' && <ProjectDetailPage project={activeProject} products={projectProducts} statuses={statuses} loading={loading || productsLoading} searchTerm={searchTerm} onSearchChange={event => { setSearchTerm(event.target.value); setProductPage(1); }} onClearSearch={() => { setSearchTerm(''); setProductPage(1); }} productStatusCounts={productStatusCounts} productStatusFilter={productStatusFilter} productTagFilter={productTagFilter} onStatusFilterChange={value => { setProductStatusFilter(value); setProductPage(1); }} onTagFilterChange={value => { setProductTagFilter(value); setProductPage(1); }} availableProductTags={availableProductTags} productsTotal={productsTotal} productPage={productPage} onPageChange={setProductPage} onBack={() => navigate('projects')} onCreateProduct={openCreateProduct} onImport={() => { setError(''); setIsImportOpen(true); }} onEdit={openEditProduct} onDelete={handleDeleteProduct} deletingId={deletingId} canDelete={canDeleteProducts} />}
       {page === 'statuses' && authUser.role === 'owner' && <StatusesPage statuses={statuses} loading={loading} onCreate={openCreateStatus} onEdit={openEditStatus} onDelete={handleDeleteStatus} />}
       {page === 'members' && authUser.role === 'owner' && <MembersPage members={members} loading={membersLoading} currentUser={authUser} onCreate={openCreateMember} onEdit={openEditMember} onDeactivate={handleDeactivateMember} />}
     </main>
