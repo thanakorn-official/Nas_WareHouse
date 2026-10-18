@@ -21,6 +21,7 @@ const DEFAULT_STATUSES = [
   { name: 'พักการขาย', color: '#b36e18', sortOrder: 2 },
   { name: 'รอตรวจสอบ', color: '#1769e0', sortOrder: 3 },
 ];
+const DEFAULT_PRODUCT_CATEGORIES = ['Computer', 'Monitor', 'UPS', 'Printer'];
 const ROLES = ['owner', 'manager', 'employee'];
 const MAX_PRODUCTS_PER_BATCH = 10000;
 const TOKEN_SECRET = process.env.AUTH_SECRET || crypto.randomBytes(32).toString('hex');
@@ -114,12 +115,13 @@ const normalizeColor = color => {
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toUpperCase() : null;
 };
 
-const parseProductPayload = ({ name, productCode, quantity, statusId, projectId, customFields = {}, tags = [] }, { allowZeroQuantity = false, allowLargeQuantity = false } = {}) => {
+const parseProductPayload = ({ name, productCode, quantity, statusId, projectId, categoryId, customFields = {}, tags = [] }, { allowZeroQuantity = false, allowLargeQuantity = false } = {}) => {
   const normalizedName = (typeof name === 'string' ? name.trim() : '') || 'unaname';
   const normalizedProductCode = typeof productCode === 'string' ? productCode.trim() : '';
   const normalizedQuantity = Number(quantity);
   const normalizedStatusId = Number(statusId);
   const normalizedProjectId = Number(projectId);
+  const normalizedCategoryId = categoryId === undefined || categoryId === null || categoryId === '' ? null : parseId(categoryId);
   const normalizedTags = Array.isArray(tags)
     ? [...new Set(tags.map(tag => String(tag).trim()).filter(Boolean))].slice(0, 50)
     : null;
@@ -140,10 +142,11 @@ const parseProductPayload = ({ name, productCode, quantity, statusId, projectId,
   if (!Number.isInteger(normalizedStatusId) || normalizedStatusId < 1) {
     return { error: 'กรุณาเลือกสถานะสินค้า' };
   }
+  if (categoryId !== undefined && categoryId !== null && categoryId !== '' && !normalizedCategoryId) return { error: 'Invalid product category.' };
   if (!normalizedTags || normalizedTags.some(tag => tag.length > 1024)) return { error: 'แท็กสินค้าไม่ถูกต้อง (ไม่เกิน 1,024 ตัวอักษรต่อแท็ก)' };
-  if (!normalizedCustomFields || Object.keys(normalizedCustomFields).length > 50) return { error: 'Custom Fields ไม่ถูกต้อง (เพิ่มได้ไม่เกิน 50 ช่อง)' };
+  if (!normalizedCustomFields || Object.keys(normalizedCustomFields).length > 50) return { error: 'รายละเอียดเพิ่มเติมไม่ถูกต้อง (เพิ่มได้ไม่เกิน 50 ช่อง)' };
 
-  return { value: { name: normalizedName, productCode: normalizedProductCode || null, quantity: normalizedQuantity, statusId: normalizedStatusId, projectId: normalizedProjectId, customFields: normalizedCustomFields, tags: normalizedTags } };
+  return { value: { name: normalizedName, productCode: normalizedProductCode || null, quantity: normalizedQuantity, statusId: normalizedStatusId, projectId: normalizedProjectId, categoryId: normalizedCategoryId, customFields: normalizedCustomFields, tags: normalizedTags } };
 };
 
 const buildProductRows = (items, projectCode, startingNumber) => {
@@ -155,6 +158,7 @@ const buildProductRows = (items, projectCode, startingNumber) => {
         product_code: item.productCode || `${projectCode}-${String(nextNumber).padStart(4, '0')}`,
         name: item.name,
         status_id: item.statusId,
+        category_id: item.categoryId,
         custom_fields: item.customFields,
         tags: item.tags,
       });
@@ -165,22 +169,27 @@ const buildProductRows = (items, projectCode, startingNumber) => {
 };
 
 const insertProductRows = (client, projectId, rows, memberId) => client.query(
-  `INSERT INTO products (project_id, product_code, name, quantity, status_id, custom_fields, tags, added_by)
-   SELECT $1, item.product_code, item.name, 1, status.id, item.custom_fields, item.tags, $3
-   FROM jsonb_to_recordset($2::jsonb) AS item(product_code text, name text, status_id integer, custom_fields jsonb, tags text[])
+  `INSERT INTO products (project_id, product_code, name, quantity, status_id, category_id, custom_fields, tags, added_by)
+   SELECT $1, item.product_code, item.name, 1, status.id, item.category_id, item.custom_fields, item.tags, $3
+   FROM jsonb_to_recordset($2::jsonb) AS item(product_code text, name text, status_id integer, category_id integer, custom_fields jsonb, tags text[])
    JOIN statuses status ON status.id = item.status_id AND status.is_active`,
   [projectId, JSON.stringify(rows), memberId],
 );
 
-const parseStatusPayload = ({ name, color, isActive = true }) => {
+const STATUS_ICONS = new Set(['box', 'computer', 'display', 'printer', 'tools', 'check', 'clock', 'warning', 'repair', 'remove', 'star']);
+const PRODUCT_CATEGORY_ICONS = new Set(['computer', 'display', 'ups', 'printer', 'laptop', 'server', 'network', 'folder']);
+
+const parseStatusPayload = ({ name, color, icon = 'box', isActive = true }) => {
   const normalizedName = typeof name === 'string' ? name.trim() : '';
   const normalizedColor = normalizeColor(color);
+  const normalizedIcon = typeof icon === 'string' && STATUS_ICONS.has(icon) ? icon : null;
 
   if (!normalizedName) return { error: 'กรุณาระบุชื่อสถานะ' };
   if (normalizedName.length > 50) return { error: 'ชื่อสถานะต้องไม่เกิน 50 ตัวอักษร' };
   if (!normalizedColor) return { error: 'สีสถานะต้องเป็นรหัส Hex เช่น #1769E0' };
 
-  return { value: { name: normalizedName, color: normalizedColor, isActive: Boolean(isActive) } };
+  if (!normalizedIcon) return { error: '\u0e44\u0e2d\u0e04\u0e2d\u0e19\u0e2a\u0e16\u0e32\u0e19\u0e30\u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2d\u0e07' };
+  return { value: { name: normalizedName, color: normalizedColor, icon: normalizedIcon, isActive: Boolean(isActive) } };
 };
 
 const parseProjectPayload = ({ code, name }) => {
@@ -244,11 +253,32 @@ async function initializeDatabase() {
       id SERIAL PRIMARY KEY,
       name VARCHAR(50) NOT NULL UNIQUE,
       color VARCHAR(7) NOT NULL DEFAULT '#1769E0',
+      icon VARCHAR(24) NOT NULL DEFAULT 'box',
       sort_order INT NOT NULL DEFAULT 0,
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query("ALTER TABLE statuses ADD COLUMN IF NOT EXISTS icon VARCHAR(24) NOT NULL DEFAULT 'box'");
+  const productCategoriesTable = await pool.query("SELECT to_regclass('public.product_categories') AS table_name");
+  const shouldSeedProductCategories = !productCategoriesTable.rows[0].table_name;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_categories (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(60) NOT NULL UNIQUE,
+      icon VARCHAR(24) NOT NULL DEFAULT 'folder',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query("ALTER TABLE product_categories ADD COLUMN IF NOT EXISTS icon VARCHAR(24) NOT NULL DEFAULT 'folder'");
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS product_categories_name_lower_unique_idx ON product_categories (LOWER(name))');
+  if (shouldSeedProductCategories) {
+    const iconsByCategory = { Computer: 'computer', Monitor: 'display', UPS: 'ups', Printer: 'printer' };
+    for (const name of DEFAULT_PRODUCT_CATEGORIES) {
+      await pool.query('INSERT INTO product_categories (name, icon) VALUES ($1, $2) ON CONFLICT DO NOTHING', [name, iconsByCategory[name] || 'folder']);
+    }
+  }
+  await pool.query("UPDATE product_categories SET icon = CASE LOWER(name) WHEN 'computer' THEN 'computer' WHEN 'monitor' THEN 'display' WHEN 'ups' THEN 'ups' WHEN 'printer' THEN 'printer' ELSE icon END WHERE icon = 'folder' AND LOWER(name) IN ('computer', 'monitor', 'ups', 'printer')");
 
   const columns = await pool.query(`
     SELECT column_name FROM information_schema.columns
@@ -292,6 +322,7 @@ async function initializeDatabase() {
   await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS product_code VARCHAR(40)');
   await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_fields JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]');
+  await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS category_id INT REFERENCES product_categories(id) ON DELETE SET NULL');
   await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS added_by INT REFERENCES members(id) ON DELETE SET NULL');
   await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
   await pool.query(
@@ -315,10 +346,12 @@ const productSelect = `
   SELECT p.id, p.name, p.quantity, p.product_code AS "productCode",
     p.project_id AS "projectId", pr.code AS "projectCode", p.custom_fields AS "customFields", p.tags,
     p.created_at AS "createdAt", p.added_by AS "addedById", m.full_name AS "addedBy",
-    json_build_object('id', s.id, 'name', s.name, 'color', s.color, 'isActive', s.is_active) AS status
+    CASE WHEN pc.id IS NULL THEN NULL ELSE json_build_object('id', pc.id, 'name', pc.name) END AS category,
+    json_build_object('id', s.id, 'name', s.name, 'color', s.color, 'icon', s.icon, 'isActive', s.is_active) AS status
   FROM products p JOIN statuses s ON s.id = p.status_id
   JOIN projects pr ON pr.id = p.project_id
   LEFT JOIN members m ON m.id = p.added_by
+  LEFT JOIN product_categories pc ON pc.id = p.category_id
 `;
 
 app.get('/api/auth/status', async (req, res) => {
@@ -557,9 +590,9 @@ app.delete('/api/members/:id', requireRoles('owner'), async (req, res) => {
         return res.status(409).json({ error: 'ระบบต้องมีผู้ดูแลที่ใช้งานได้อย่างน้อยหนึ่งบัญชี' });
       }
     }
-    await client.query('UPDATE members SET is_active = FALSE, updated_at = NOW() WHERE id = $1', [id]);
+    await client.query('DELETE FROM members WHERE id = $1', [id]);
     await client.query('COMMIT');
-    return res.json({ id, message: 'ปิดใช้งานสมาชิกเรียบร้อยแล้ว' });
+    return res.json({ id, message: 'Member permanently deleted.' });
   } catch (error) {
     await client.query('ROLLBACK');
     return res.status(500).json({ error: 'ไม่สามารถปิดใช้งานสมาชิกได้' });
@@ -577,40 +610,52 @@ app.get('/api/products', async (req, res) => {
     const limit = Number.isInteger(limitValue) ? Math.min(100, Math.max(1, limitValue)) : 100;
     const offset = Number.isInteger(offsetValue) ? Math.max(0, offsetValue) : 0;
     const query = String(req.query.q || '').trim().slice(0, 200);
-    const statusId = req.query.statusId ? parseId(req.query.statusId) : null;
-    const tag = String(req.query.tag || '').trim().slice(0, 1024);
-    if (req.query.statusId && !statusId) return res.status(400).json({ error: 'Invalid status ID.' });
+    const dashboardBy = ['status', 'category', 'tag'].includes(req.query.dashboardBy) ? req.query.dashboardBy : 'status';
+    const queryList = value => (Array.isArray(value) ? value : value === undefined ? [] : [value]).filter(item => String(item ?? '').trim() !== '');
+    const statusIds = queryList(req.query.statusIds ?? req.query.statusId).map(parseId);
+    const categoryIds = queryList(req.query.categoryIds ?? req.query.categoryId).map(parseId);
+    const tags = queryList(req.query.tags ?? req.query.tag).map(value => String(value).trim().slice(0, 1024));
+    if (statusIds.includes(null)) return res.status(400).json({ error: 'Invalid status ID.' });
+    if (categoryIds.includes(null)) return res.status(400).json({ error: 'Invalid product category ID.' });
 
     const values = [];
     const conditions = [];
     if (projectId) {
       values.push(projectId);
-      conditions.push(`p.project_id = $${values.length}`);
+      conditions.push('p.project_id = $' + values.length);
     }
-    if (statusId) {
-      values.push(statusId);
-      conditions.push(`p.status_id = $${values.length}`);
+    if (statusIds.length) {
+      values.push(statusIds);
+      conditions.push('p.status_id = ANY($' + values.length + '::int[])');
     }
-    if (tag) {
-      values.push(tag);
-      conditions.push(`p.tags @> ARRAY[$${values.length}]::text[]`);
+    if (categoryIds.length) {
+      values.push(categoryIds);
+      conditions.push('p.category_id = ANY($' + values.length + '::int[])');
+    }
+    if (tags.length) {
+      values.push(tags);
+      conditions.push('p.tags && $' + values.length + '::text[]');
     }
     if (query) {
       values.push(`%${query}%`);
       const queryParam = `$${values.length}`;
-      conditions.push(`(p.name ILIKE ${queryParam} OR p.product_code ILIKE ${queryParam} OR p.tags::text ILIKE ${queryParam} OR p.custom_fields::text ILIKE ${queryParam} OR COALESCE(m.full_name, '') ILIKE ${queryParam} OR s.name ILIKE ${queryParam})`);
+      conditions.push(`(p.name ILIKE ${queryParam} OR p.product_code ILIKE ${queryParam} OR p.tags::text ILIKE ${queryParam} OR p.custom_fields::text ILIKE ${queryParam} OR COALESCE(m.full_name, '') ILIKE ${queryParam} OR s.name ILIKE ${queryParam} OR pc.name ILIKE ${queryParam})`);
     }
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageValues = [...values, limit, offset];
-    const [result, countResult, tagResult, statusCountResult] = await Promise.all([
+    const aggregateJoins = 'FROM products p JOIN statuses s ON s.id = p.status_id LEFT JOIN members m ON m.id = p.added_by LEFT JOIN product_categories pc ON pc.id = p.category_id';
+    const dashboardQuery = dashboardBy === 'tag'
+      ? `SELECT tag_values.tag AS id, tag_values.tag AS name, COUNT(DISTINCT p.id)::int AS count FROM products p CROSS JOIN LATERAL unnest(p.tags) AS tag_values(tag) JOIN statuses s ON s.id = p.status_id LEFT JOIN members m ON m.id = p.added_by LEFT JOIN product_categories pc ON pc.id = p.category_id ${whereClause} GROUP BY tag_values.tag ORDER BY count DESC, name`
+      : dashboardBy === 'category'
+        ? `SELECT COALESCE(p.category_id::text, 'unassigned') AS id, pc.name, pc.icon, COUNT(*)::int AS count ${aggregateJoins} ${whereClause} GROUP BY p.category_id, pc.name, pc.icon ORDER BY count DESC, pc.name NULLS LAST`
+        : `SELECT p.status_id::text AS id, s.name, s.color, s.icon, COUNT(*)::int AS count ${aggregateJoins} ${whereClause} GROUP BY p.status_id, s.name, s.color, s.icon ORDER BY count DESC, s.name`;
+    const [result, countResult, tagResult, dashboardCountResult] = await Promise.all([
       pool.query(`${productSelect} ${whereClause} ORDER BY p.id DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`, pageValues),
-      pool.query(`SELECT COUNT(*)::int AS total FROM products p JOIN statuses s ON s.id = p.status_id LEFT JOIN members m ON m.id = p.added_by ${whereClause}`, values),
+      pool.query(`SELECT COUNT(*)::int AS total FROM products p JOIN statuses s ON s.id = p.status_id LEFT JOIN members m ON m.id = p.added_by LEFT JOIN product_categories pc ON pc.id = p.category_id ${whereClause}`, values),
       projectId
         ? pool.query('SELECT DISTINCT tag FROM products p CROSS JOIN LATERAL unnest(p.tags) AS tag_values(tag) WHERE p.project_id = $1 ORDER BY tag', [projectId])
         : pool.query('SELECT DISTINCT tag FROM products p CROSS JOIN LATERAL unnest(p.tags) AS tag_values(tag) ORDER BY tag'),
-      projectId
-        ? pool.query('SELECT status_id AS id, COUNT(*)::int AS count FROM products WHERE project_id = $1 GROUP BY status_id', [projectId])
-        : pool.query('SELECT status_id AS id, COUNT(*)::int AS count FROM products GROUP BY status_id'),
+      pool.query(dashboardQuery, values),
     ]);
     return res.json({
       items: result.rows,
@@ -618,10 +663,60 @@ app.get('/api/products', async (req, res) => {
       limit,
       offset,
       tags: tagResult.rows.map(row => row.tag),
-      statusCounts: Object.fromEntries(statusCountResult.rows.map(row => [row.id, row.count])),
+      dashboardBy,
+      dashboardCounts: dashboardCountResult.rows,
     });
   } catch (err) {
     res.status(500).json({ error: 'ไม่สามารถโหลดรายการสินค้าได้' });
+  }
+});
+
+app.get('/api/product-categories', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, icon FROM product_categories ORDER BY LOWER(name), id');
+    return res.json(result.rows);
+  } catch (error) {
+    return res.status(500).json({ error: 'Could not load product categories.' });
+  }
+});
+
+app.post('/api/product-categories', requireRoles('owner', 'manager'), async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const icon = req.body?.icon === undefined ? 'folder' : req.body.icon;
+  if (!name || name.length > 60) return res.status(400).json({ error: 'Category name must be between 1 and 60 characters.' });
+  if (typeof icon !== 'string' || !PRODUCT_CATEGORY_ICONS.has(icon)) return res.status(400).json({ error: 'Invalid product category icon.' });
+  try {
+    const result = await pool.query('INSERT INTO product_categories (name, icon) VALUES ($1, $2) RETURNING id, name, icon', [name, icon]);
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'A product category with this name already exists.' });
+    return res.status(500).json({ error: 'Could not create product category.' });
+  }
+});
+
+app.put('/api/product-categories/:id/icon', requireRoles('owner'), async (req, res) => {
+  const id = parseId(req.params.id);
+  const icon = req.body?.icon;
+  if (!id) return res.status(400).json({ error: 'Invalid product category ID.' });
+  if (typeof icon !== 'string' || !PRODUCT_CATEGORY_ICONS.has(icon)) return res.status(400).json({ error: 'Invalid product category icon.' });
+  try {
+    const result = await pool.query('UPDATE product_categories SET icon = $1 WHERE id = $2 RETURNING id, name, icon', [icon, id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Product category not found.' });
+    return res.json(result.rows[0]);
+  } catch (error) {
+    return res.status(500).json({ error: 'Could not update product category icon.' });
+  }
+});
+
+app.delete('/api/product-categories/:id', requireRoles('owner'), async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid product category ID.' });
+  try {
+    const result = await pool.query('DELETE FROM product_categories WHERE id = $1 RETURNING id', [id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Product category not found.' });
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(500).json({ error: 'Could not delete product category.' });
   }
 });
 
@@ -648,6 +743,7 @@ app.post('/api/products', requireRoles('owner', 'manager', 'employee'), async (r
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') return res.status(409).json({ error: 'Product ID already exists in this project.' });
+    if (err.code === '23503') return res.status(400).json({ error: 'Product category no longer exists.' });
     return res.status(500).json({ error: '???????????????????????' });
   } finally {
     client.release();
@@ -695,17 +791,18 @@ app.put('/api/products/:id', requireRoles('owner', 'manager', 'employee'), async
   if (!id) return res.status(400).json({ error: 'รหัสสินค้าไม่ถูกต้อง' });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try {
-    const { name, productCode, quantity, statusId, customFields, tags } = parsed.value;
+    const { name, productCode, quantity, statusId, categoryId, customFields, tags } = parsed.value;
     const result = await pool.query(
-      `UPDATE products SET product_code = COALESCE($1, product_code), name = $2, quantity = $3, status_id = $4, custom_fields = $5::jsonb, tags = $6
-       WHERE id = $7 AND EXISTS (SELECT 1 FROM statuses s WHERE s.id = $4 AND (s.is_active OR EXISTS (SELECT 1 FROM products current_product WHERE current_product.id = $7 AND current_product.status_id = s.id))) RETURNING id`,
-      [productCode, name, quantity, statusId, JSON.stringify(customFields), tags, id],
+      `UPDATE products SET product_code = COALESCE($1, product_code), name = $2, quantity = $3, status_id = $4, category_id = $5, custom_fields = $6::jsonb, tags = $7
+       WHERE id = $8 AND EXISTS (SELECT 1 FROM statuses s WHERE s.id = $4 AND (s.is_active OR EXISTS (SELECT 1 FROM products current_product WHERE current_product.id = $8 AND current_product.status_id = s.id))) RETURNING id`,
+      [productCode, name, quantity, statusId, categoryId, JSON.stringify(customFields), tags, id],
     );
     if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบสินค้าหรือสถานะไม่พร้อมใช้งาน' });
     const product = await pool.query(`${productSelect} WHERE p.id = $1`, [id]);
     return res.json(product.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Product ID already exists in this project.' });
+    if (err.code === '23503') return res.status(400).json({ error: 'Product category no longer exists.' });
     return res.status(500).json({ error: 'ไม่สามารถแก้ไขสินค้าได้' });
   }
 });
@@ -725,7 +822,7 @@ app.delete('/api/products/:id', requireRoles('owner', 'manager'), async (req, re
 app.get('/api/statuses', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT s.id, s.name, s.color, s.sort_order AS "sortOrder", s.is_active AS "isActive",
+      SELECT s.id, s.name, s.color, s.icon, s.sort_order AS "sortOrder", s.is_active AS "isActive",
         COUNT(p.id)::int AS "productCount"
       FROM statuses s LEFT JOIN products p ON p.status_id = s.id
       GROUP BY s.id ORDER BY s.sort_order, s.id
@@ -736,16 +833,16 @@ app.get('/api/statuses', async (req, res) => {
   }
 });
 
-app.post('/api/statuses', requireRoles('owner'), async (req, res) => {
+app.post('/api/statuses', requireRoles('owner', 'manager'), async (req, res) => {
   const parsed = parseStatusPayload(req.body);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try {
-    const { name, color, isActive } = parsed.value;
+    const { name, color, icon, isActive } = parsed.value;
     const result = await pool.query(
-      `INSERT INTO statuses (name, color, sort_order, is_active)
-       VALUES ($1, $2, COALESCE((SELECT MAX(sort_order) + 1 FROM statuses), 1), $3)
-       RETURNING id, name, color, sort_order AS "sortOrder", is_active AS "isActive"`,
-      [name, color, isActive],
+      `INSERT INTO statuses (name, color, icon, sort_order, is_active)
+       VALUES ($1, $2, $3, COALESCE((SELECT MAX(sort_order) + 1 FROM statuses), 1), $4)
+       RETURNING id, name, color, icon, sort_order AS "sortOrder", is_active AS "isActive"`,
+      [name, color, icon, isActive],
     );
     return res.status(201).json({ ...result.rows[0], productCount: 0 });
   } catch (err) {
@@ -760,15 +857,15 @@ app.put('/api/statuses/:id', requireRoles('owner'), async (req, res) => {
   if (!id) return res.status(400).json({ error: 'รหัสสถานะไม่ถูกต้อง' });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try {
-    const { name, color, isActive } = parsed.value;
+    const { name, color, icon, isActive } = parsed.value;
     if (!isActive) {
       const usage = await pool.query('SELECT COUNT(*)::int AS count FROM products WHERE status_id = $1', [id]);
       if (usage.rows[0].count > 0) return res.status(409).json({ error: 'ไม่สามารถปิดสถานะที่มีสินค้าใช้งานอยู่ได้' });
     }
     const result = await pool.query(
-      `UPDATE statuses SET name = $1, color = $2, is_active = $3 WHERE id = $4
-       RETURNING id, name, color, sort_order AS "sortOrder", is_active AS "isActive"`,
-      [name, color, isActive, id],
+      `UPDATE statuses SET name = $1, color = $2, icon = $3, is_active = $4 WHERE id = $5
+       RETURNING id, name, color, icon, sort_order AS "sortOrder", is_active AS "isActive"`,
+      [name, color, icon, isActive, id],
     );
     if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบสถานะที่ต้องการแก้ไข' });
     const count = await pool.query('SELECT COUNT(*)::int AS count FROM products WHERE status_id = $1', [id]);
